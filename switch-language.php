@@ -287,15 +287,28 @@ function extract_text_from_all_pages() {
     $pages = get_posts($args);
 
     foreach ($pages as $page) {
-        // Get the content of each page
+        // Initialize content to extract from this post/product
+        $content_to_extract = '';
+
+        // Get the content of each page or product
         $page_content = $page->post_content;
+        $page_title = $page->post_title;
+
+        // Add content from the product short description (WooCommerce-specific)
+        $short_description = get_post_meta($page->ID, '_short_description', true);
+
+        // Add other WooCommerce-specific data (if needed, such as price, attributes, etc.)
+        // You can expand this section if more product fields need to be included
+
+        // Combine title, content, and short description for text extraction
+        $content_to_extract .= $page_title . "\n" . $page_content . "\n" . $short_description;
 
         // Remove inline <style> and <script> tags and their content
-        $page_content = preg_replace('#<style(.*?)>(.*?)</style>#is', '', $page_content);
-        $page_content = preg_replace('#<script(.*?)>(.*?)</script>#is', '', $page_content);
+        $content_to_extract = preg_replace('#<style(.*?)>(.*?)</style>#is', '', $content_to_extract);
+        $content_to_extract = preg_replace('#<script(.*?)>(.*?)</script>#is', '', $content_to_extract);
 
         // Use regex to extract text from within HTML tags
-        preg_match_all('/>([^<>]+)</', $page_content, $matches);
+        preg_match_all('/>([^<>]+)</', $content_to_extract, $matches);
 
         if (!empty($matches[1])) {
             foreach ($matches[1] as $extracted_text) {
