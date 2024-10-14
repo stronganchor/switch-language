@@ -265,16 +265,16 @@ function translate_and_display_texts($source_lang, $target_lang, $results) {
     echo '<div class="updated"><p>All texts have been translated and stored in the database.</p></div>';
 }
 
-// Function to extract text from all published pages and posts and add unique texts to the database
+// Function to extract text from all published pages, posts, and WooCommerce products
 function extract_text_from_all_pages() {
     global $wpdb;
     $table_name = $wpdb->prefix . 'extracted_texts';
 
-    // Query all published pages and posts
+    // Query all published pages, posts, and WooCommerce products
     $args = [
-        'post_type' => ['page', 'post'], // Include pages and posts; adjust if other content types are needed
+        'post_type' => ['page', 'post', 'product'], // Include WooCommerce 'product' post type
         'post_status' => 'publish',
-        'posts_per_page' => -1 // Get all posts and pages
+        'posts_per_page' => -1 // Get all posts, pages, and products
     ];
     $pages = get_posts($args);
 
@@ -319,5 +319,5 @@ function extract_text_from_all_pages() {
         }
     }
 
-    echo '<div class="updated"><p>Text extraction from all pages and posts completed. Check the Extracted Texts page.</p></div>';
+    echo '<div class="updated"><p>Text extraction from all pages, posts, and products completed. Check the Extracted Texts page.</p></div>';
 }
