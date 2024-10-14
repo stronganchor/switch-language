@@ -64,9 +64,52 @@ function add_switch_language_admin_menu() {
 }
 add_action('admin_menu', 'add_switch_language_admin_menu');
 
+// Register DeepL API settings
+function deepl_api_register_settings() {
+    register_setting('deepl_api_settings_group', 'deepl_api_key');
+    add_settings_section('deepl_api_settings_section', 'DeepL API Configuration', null, 'deepl-api-settings');
+    add_settings_field('deepl_api_key', 'DeepL API Key', 'deepl_api_key_callback', 'deepl-api-settings', 'deepl_api_settings_section');
+}
+add_action('admin_init', 'deepl_api_register_settings');
+
 function deepl_api_key_callback() {
     $deepl_api_key = get_option('deepl_api_key', '');
     echo '<input type="text" name="deepl_api_key" value="' . esc_attr($deepl_api_key) . '" size="40">';
+}
+
+// Function to capture and process the page content using output buffering
+function start_language_switch_buffer() {
+    ob_start('process_translations_in_buffer');
+}
+add_action('template_redirect', 'start_language_switch_buffer');
+
+// Function to process the buffer and replace text with translations
+function process_translations_in_buffer($content) {
+    global $wpdb;
+
+    // Get user's browser language
+    $browser_lang = substr($_SERVER['HTTP_ACCEPT_LANGUAGE'], 0, 2);
+
+    // Get all extracted texts from the database
+    $table_name = $wpdb->prefix . 'extracted_texts';
+    $extracted_texts = $wpdb->get_results("SELECT id, original_text FROM $table_name");
+
+    // Replace each original text with its translation, if available
+    foreach ($extracted_texts as $text) {
+        // Get the translated text for the user's browser language
+        $translated_text = $wpdb->get_var($wpdb->prepare(
+            "SELECT translated_text FROM {$wpdb->prefix}extracted_text_translations WHERE extracted_text_id = %d AND target_language = %s",
+            $text->id, $browser_lang
+        ));
+
+        // If a translation is found, replace the original text in the page content
+        if (!empty($translated_text)) {
+            $content = str_replace($text->original_text, $translated_text, $content);
+        }
+    }
+
+    // Return the modified content with translations
+    return $content;
 }
 
 // Display extracted texts page
@@ -150,46 +193,4 @@ function translate_and_display_texts($source_lang, $target_lang, $results) {
     }
 
     echo '<div class="updated"><p>All texts have been translated and displayed below.</p></div>';
-}
-
-// DeepL API Settings page
-function deepl_api_settings_page() {
-    ?>
-    <div class="wrap">
-        <h1>DeepL API Settings</h1>
-        <form method="post" action="options.php">
-            <?php
-            settings_fields('deepl_api_settings_group');
-            do_settings_sections('deepl-api-settings');
-            submit_button();
-            ?>
-        </form>
-    </div>
-    <?php
-}
-
-// Register DeepL API settings
-function deepl_api_register_settings() {
-    register_setting('deepl_api_settings_group', 'deepl_api_key');
-
-    add_settings_section(
-        'deepl_api_settings_section',
-        'DeepL API Configuration',
-        null,
-        'deepl-api-settings'
-    );
-
-    add_settings_field(
-        'deepl_api_key',
-        'DeepL API Key',
-        'deepl_api_key_callback',
-        'deepl-api-settings',
-        'deepl_api_settings_section'
-    );
-}
-add_action('admin_init', 'deepl_api_register_settings');
-
-// Default settings page
-function switch_language_settings_page() {
-    echo '<h1>Switch Language Plugin Settings</h1>';
 }
