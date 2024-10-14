@@ -143,17 +143,21 @@ function process_translations_in_buffer($content) {
     return $content;
 }
 
-// Display extracted texts page
+// Display extracted texts page with buttons to extract text, clear the database, and translate texts
 function display_extracted_texts() {
     global $wpdb;
     $table_name = $wpdb->prefix . 'extracted_texts';
     $results = $wpdb->get_results("SELECT * FROM $table_name");
 
-    // Retrieve available DeepL languages
-    $source_languages = deepl_get_language_codes();
-    $target_languages = deepl_get_language_codes();
+    // Handle button actions
+    if (isset($_POST['extract_texts'])) {
+        extract_text_from_page();  // Extract text from homepage (or provide a specific page ID)
+    }
 
-    // Handle form submissions for translation
+    if (isset($_POST['clear_database'])) {
+        clear_extracted_texts();
+    }
+
     if (isset($_POST['translate_texts'])) {
         $source_lang = sanitize_text_field($_POST['source_lang']);
         $target_lang = sanitize_text_field($_POST['target_lang']);
@@ -163,10 +167,16 @@ function display_extracted_texts() {
     echo '<div class="wrap">';
     echo '<h1>Extracted Texts</h1>';
 
-    // Form to select source and target languages and translate texts
+    // Add buttons to manually extract text, clear database, and translate texts
     echo '<form method="post">';
+    submit_button('Extract Texts from Homepage', 'primary', 'extract_texts', false);
+    submit_button('Clear Database', 'secondary', 'clear_database', false);
+
+    // Add translation section with language selection
+    echo '<h2>Translate Extracted Texts</h2>';
     echo '<label for="source_lang">Source Language: </label>';
     echo '<select name="source_lang" id="source_lang">';
+    $source_languages = deepl_get_language_codes();
     foreach ($source_languages as $code => $name) {
         echo "<option value='$code'>$name</option>";
     }
@@ -174,6 +184,7 @@ function display_extracted_texts() {
 
     echo '<label for="target_lang">Target Language: </label>';
     echo '<select name="target_lang" id="target_lang">';
+    $target_languages = deepl_get_language_codes();
     foreach ($target_languages as $code => $name) {
         echo "<option value='$code'>$name</option>";
     }
@@ -204,6 +215,15 @@ function display_extracted_texts() {
     echo '</div>';
 }
 
+// Function to clear the extracted texts and translations from the database
+function clear_extracted_texts() {
+    global $wpdb;
+    $wpdb->query("TRUNCATE TABLE {$wpdb->prefix}extracted_texts");
+    $wpdb->query("TRUNCATE TABLE {$wpdb->prefix}extracted_text_translations");
+
+    echo '<div class="updated"><p>The database has been cleared.</p></div>';
+}
+
 // Function to translate extracted texts using DeepL and store them in the translation table
 function translate_and_display_texts($source_lang, $target_lang, $results) {
     global $wpdb;
@@ -228,3 +248,46 @@ function translate_and_display_texts($source_lang, $target_lang, $results) {
 
     echo '<div class="updated"><p>All texts have been translated and stored in the database.</p></div>';
 }
+
+// Function to extract texts from a specific page (e.g., homepage) and add them to the database
+function extract_text_from_page($page_id = null) {
+    global $wpdb;
+    $table_name = $wpdb->prefix . 'extracted_texts';
+
+    if (is_null($page_id)) {
+        // Default to homepage if no page_id is provided
+        $page_id = get_option('page_on_front');
+    }
+
+    // Get the content of the page
+    $page_content = get_post_field('post_content', $page_id);
+
+    // Use regex to extract text from HTML (you may need to adjust based on your content structure)
+    // This example is extracting text from within HTML tags
+    preg_match_all('/>([^<>]+)</', $page_content, $matches);
+
+    if (!empty($matches[1])) {
+        foreach ($matches[1] as $extracted_text) {
+            // Sanitize and clean up extracted text
+            $extracted_text = trim(strip_tags($extracted_text));
+
+            // Check if this text already exists in the database to avoid duplicates
+            $existing_text = $wpdb->get_var($wpdb->prepare("SELECT id FROM $table_name WHERE original_text = %s", $extracted_text));
+
+            if (!$existing_text && !empty($extracted_text)) {
+                // Insert the extracted text into the database
+                $wpdb->insert(
+                    $table_name,
+                    [
+                        'original_text' => $extracted_text,
+                        'source_language' => get_locale() // Use WordPress' default language as the source
+                    ]
+                );
+            }
+        }
+    }
+
+    echo '<div class="updated"><p>Text extraction completed. Check the Extracted Texts page.</p></div>';
+}
+
+
