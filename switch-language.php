@@ -290,18 +290,27 @@ function extract_text_from_all_pages() {
         // Initialize content to extract from this post/product
         $content_to_extract = '';
 
-        // Get the content of each page or product
-        $page_content = $page->post_content;
+        // Get the product title (important for WooCommerce products)
         $page_title = $page->post_title;
 
-        // Add content from the product short description (WooCommerce-specific)
+        // Get the main content (description for WooCommerce products)
+        $page_content = $page->post_content;
+
+        // Get the product short description (WooCommerce-specific)
         $short_description = get_post_meta($page->ID, '_short_description', true);
 
-        // Add other WooCommerce-specific data (if needed, such as price, attributes, etc.)
-        // You can expand this section if more product fields need to be included
+        // Get product attributes ("Additional Information" or "Ek Bilgi")
+        $attributes = wc_get_product($page->ID)->get_attributes();
 
-        // Combine title, content, and short description for text extraction
+        // Add content from the product title, description, short description, and attributes
         $content_to_extract .= $page_title . "\n" . $page_content . "\n" . $short_description;
+
+        // Add product attributes ("Additional Information")
+        if (!empty($attributes)) {
+            foreach ($attributes as $attribute) {
+                $content_to_extract .= "\n" . wc_attribute_label($attribute->get_name()) . ": " . implode(', ', $attribute->get_options());
+            }
+        }
 
         // Remove inline <style> and <script> tags and their content
         $content_to_extract = preg_replace('#<style(.*?)>(.*?)</style>#is', '', $content_to_extract);
