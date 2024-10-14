@@ -287,73 +287,99 @@ function extract_text_from_all_pages() {
     $pages = get_posts($args);
 
     foreach ($pages as $page) {
-        // Initialize content to extract from this post/product
-        $content_to_extract = '';
-
-        // Get the product title (important for WooCommerce products)
-        $page_title = $page->post_title;
-
-        // Get the main content (description for WooCommerce products)
-        $page_content = $page->post_content;
-
-        // Get the product short description (WooCommerce-specific)
-        $short_description = get_post_meta($page->ID, '_short_description', true);
-
-        // Debug: log short description to verify we're capturing it
-        if (defined('WP_DEBUG') && WP_DEBUG) {
-            error_log('Short Description for product ' . $page->ID . ': ' . $short_description);
-        }
-
         // Check if this post is a WooCommerce product
-        $product = wc_get_product($page->ID);
+        if ($page->post_type === 'product') {
+            // Get the permalink (URL) for the product page
+            $product_url = get_permalink($page->ID);
 
-        // If it's a product, get its attributes ("Additional Information" or "Ek Bilgi")
-        if ($product) {
-            $attributes = $product->get_attributes();
+            // Fetch the front-end HTML of the product page
+            $response = wp_remote_get($product_url);
+            if (is_wp_error($response)) {
+                continue; // Skip if the request failed
+            }
 
-            // Add content from product attributes ("Additional Information")
-            if (!empty($attributes)) {
-                foreach ($attributes as $attribute) {
-                    $content_to_extract .= "\n" . wc_attribute_label($attribute->get_name()) . ": " . implode(', ', $attribute->get_options());
+            $html = wp_remote_retrieve_body($response);
+
+            // Use regex to extract all text within HTML tags, excluding script and style content
+            $html = preg_replace('#<style(.*?)>(.*?)</style>#is', '', $html);
+            $html = preg_replace('#<script(.*?)>(.*?)</script>#is', '', $html);
+
+            // Use regex to extract text from within HTML tags
+            preg_match_all('/>([^<>]+)</', $html, $matches);
+
+            if (!empty($matches[1])) {
+                foreach ($matches[1] as $extracted_text) {
+                    // Sanitize and clean up extracted text
+                    $extracted_text = trim(strip_tags($extracted_text));
+
+                    // Skip empty strings and texts that are only numbers/punctuation/symbols
+                    if (empty($extracted_text) || preg_match('/^[\W\d]+$/', $extracted_text)) {
+                        continue;
+                    }
+
+                    // Check if this text already exists in the database to avoid duplicates
+                    $existing_text = $wpdb->get_var($wpdb->prepare(
+                        "SELECT id FROM $table_name WHERE original_text = %s", 
+                        $extracted_text
+                    ));
+
+                    if (!$existing_text && !empty($extracted_text)) {
+                        // Insert the unique extracted text into the database
+                        $wpdb->insert(
+                            $table_name,
+                            [
+                                'original_text' => $extracted_text,
+                                'source_language' => get_locale(), // Use WordPress' default language as the source
+                            ]
+                        );
+                    }
                 }
             }
-        }
+        } else {
+            // Handle regular posts and pages (non-WooCommerce products)
+            // Initialize content to extract from this post
+            $content_to_extract = '';
 
-        // Combine title, content, and short description for text extraction
-        $content_to_extract .= $page_title . "\n" . $page_content . "\n" . $short_description;
+            // Get the post/page title and content
+            $page_title = $page->post_title;
+            $page_content = $page->post_content;
 
-        // Remove inline <style> and <script> tags and their content
-        $content_to_extract = preg_replace('#<style(.*?)>(.*?)</style>#is', '', $content_to_extract);
-        $content_to_extract = preg_replace('#<script(.*?)>(.*?)</script>#is', '', $content_to_extract);
+            // Combine title and content for text extraction
+            $content_to_extract .= $page_title . "\n" . $page_content;
 
-        // Use regex to extract text from within HTML tags
-        preg_match_all('/>([^<>]+)</', $content_to_extract, $matches);
+            // Remove inline <style> and <script> tags and their content
+            $content_to_extract = preg_replace('#<style(.*?)>(.*?)</style>#is', '', $content_to_extract);
+            $content_to_extract = preg_replace('#<script(.*?)>(.*?)</script>#is', '', $content_to_extract);
 
-        if (!empty($matches[1])) {
-            foreach ($matches[1] as $extracted_text) {
-                // Sanitize and clean up extracted text
-                $extracted_text = trim(strip_tags($extracted_text));
+            // Use regex to extract text from within HTML tags
+            preg_match_all('/>([^<>]+)</', $content_to_extract, $matches);
 
-                // Skip empty strings and texts that are only numbers/punctuation/symbols
-                if (empty($extracted_text) || preg_match('/^[\W\d]+$/', $extracted_text)) {
-                    continue;
-                }
+            if (!empty($matches[1])) {
+                foreach ($matches[1] as $extracted_text) {
+                    // Sanitize and clean up extracted text
+                    $extracted_text = trim(strip_tags($extracted_text));
 
-                // Check if this text already exists in the database to avoid duplicates
-                $existing_text = $wpdb->get_var($wpdb->prepare(
-                    "SELECT id FROM $table_name WHERE original_text = %s", 
-                    $extracted_text
-                ));
+                    // Skip empty strings and texts that are only numbers/punctuation/symbols
+                    if (empty($extracted_text) || preg_match('/^[\W\d]+$/', $extracted_text)) {
+                        continue;
+                    }
 
-                if (!$existing_text && !empty($extracted_text)) {
-                    // Insert the unique extracted text into the database
-                    $wpdb->insert(
-                        $table_name,
-                        [
-                            'original_text' => $extracted_text,
-                            'source_language' => get_locale(), // Use WordPress' default language as the source
-                        ]
-                    );
+                    // Check if this text already exists in the database to avoid duplicates
+                    $existing_text = $wpdb->get_var($wpdb->prepare(
+                        "SELECT id FROM $table_name WHERE original_text = %s", 
+                        $extracted_text
+                    ));
+
+                    if (!$existing_text && !empty($extracted_text)) {
+                        // Insert the unique extracted text into the database
+                        $wpdb->insert(
+                            $table_name,
+                            [
+                                'original_text' => $extracted_text,
+                                'source_language' => get_locale(), // Use WordPress' default language as the source
+                            ]
+                        );
+                    }
                 }
             }
         }
