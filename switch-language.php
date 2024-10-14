@@ -64,14 +64,6 @@ function add_switch_language_admin_menu() {
 }
 add_action('admin_menu', 'add_switch_language_admin_menu');
 
-// Register DeepL API settings
-function deepl_api_register_settings() {
-    register_setting('deepl_api_settings_group', 'deepl_api_key');
-    add_settings_section('deepl_api_settings_section', 'DeepL API Configuration', null, 'deepl-api-settings');
-    add_settings_field('deepl_api_key', 'DeepL API Key', 'deepl_api_key_callback', 'deepl-api-settings', 'deepl_api_settings_section');
-}
-add_action('admin_init', 'deepl_api_register_settings');
-
 function deepl_api_key_callback() {
     $deepl_api_key = get_option('deepl_api_key', '');
     echo '<input type="text" name="deepl_api_key" value="' . esc_attr($deepl_api_key) . '" size="40">';
@@ -196,12 +188,6 @@ function deepl_api_register_settings() {
     );
 }
 add_action('admin_init', 'deepl_api_register_settings');
-
-// DeepL API Key field callback
-function deepl_api_key_callback() {
-    $deepl_api_key = get_option('deepl_api_key', '');
-    echo '<input type="text" name="deepl_api_key" value="' . esc_attr($deepl_api_key) . '" size="40">';
-}
 
 // Default settings page
 function switch_language_settings_page() {
