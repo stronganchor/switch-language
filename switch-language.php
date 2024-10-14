@@ -1,8 +1,7 @@
 <?php
 /**
  * Plugin Name: Switch Language
- * Plugin URI: https://example.com
- * Description: Automatically switches the WordPress site language based on the user's browser language setting.
+ * Description: Automatically switches the WordPress site language based on the user's browser language setting
  * Version: 1.1.0
  * Author: Strong Anchor Tech
  * Author URI: https://stronganchortech.com
@@ -69,7 +68,7 @@ function extract_homepage_text() {
         // Extract text from HTML content
         $extracted_texts = extract_user_facing_text($homepage_content);
 
-        // Save extracted texts to the database
+        // Save extracted texts to the database, avoiding duplicates
         save_extracted_texts($extracted_texts);
     }
 }
@@ -93,21 +92,29 @@ function extract_user_facing_text($content) {
     return array_filter($extracted_texts); // Remove empty texts
 }
 
-// Save the extracted texts into the custom database table
+// Save the extracted texts into the custom database table without creating duplicates
 function save_extracted_texts($extracted_texts) {
     global $wpdb;
     $table_name = $wpdb->prefix . 'extracted_texts';
     $source_language = get_locale(); // Use current WordPress locale as source language
 
     foreach ($extracted_texts as $text) {
-        $wpdb->insert($table_name, [
-            'original_text' => $text,
-            'source_language' => $source_language
-        ]);
+        // Check if the text already exists in the database
+        $exists = $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(*) FROM $table_name WHERE original_text = %s AND source_language = %s",
+            $text, $source_language
+        ));
+
+        if ($exists == 0) {
+            $wpdb->insert($table_name, [
+                'original_text' => $text,
+                'source_language' => $source_language
+            ]);
+        }
     }
 }
 
-// Create an admin page to display extracted texts
+// Add an admin menu page to display and manage extracted texts
 function add_text_extraction_admin_menu() {
     add_menu_page(
         'Extracted Texts', 
@@ -119,7 +126,7 @@ function add_text_extraction_admin_menu() {
 }
 add_action('admin_menu', 'add_text_extraction_admin_menu');
 
-// Display extracted texts in a table on the admin page
+// Display extracted texts in a table and add buttons for running extraction and emptying the database
 function display_extracted_texts() {
     global $wpdb;
     $table_name = $wpdb->prefix . 'extracted_texts';
@@ -127,6 +134,25 @@ function display_extracted_texts() {
 
     echo '<div class="wrap">';
     echo '<h1>Extracted Texts</h1>';
+    
+    // Add buttons for running extraction and emptying the database
+    echo '<form method="post">';
+    submit_button('Run Extraction Again', 'primary', 'run_extraction');
+    submit_button('Empty Database', 'delete', 'empty_database');
+    echo '</form>';
+
+    // Handle form submissions
+    if (isset($_POST['run_extraction'])) {
+        extract_homepage_text();
+        echo '<div class="updated"><p>Extraction process has been run again.</p></div>';
+    }
+
+    if (isset($_POST['empty_database'])) {
+        $wpdb->query("TRUNCATE TABLE $table_name");
+        echo '<div class="updated"><p>All extracted texts have been deleted.</p></div>';
+    }
+
+    // Display the extracted texts in a table
     echo '<table class="widefat">';
     echo '<thead><tr><th>ID</th><th>Text</th><th>Source Language</th></tr></thead>';
     echo '<tbody>';
