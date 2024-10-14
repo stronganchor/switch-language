@@ -337,7 +337,7 @@ function extract_text_from_all_pages() {
 
                     // Check if this text already exists in the database to avoid duplicates
                     $existing_text = $wpdb->get_var($wpdb->prepare(
-                        "SELECT id FROM $table_name WHERE original_text = %s", 
+                        "SELECT id FROM $table_name WHERE BINARY original_text = %s", 
                         $extracted_text
                     ));
 
