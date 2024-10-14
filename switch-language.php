@@ -299,6 +299,11 @@ function extract_text_from_all_pages() {
         // Get the product short description (WooCommerce-specific)
         $short_description = get_post_meta($page->ID, '_short_description', true);
 
+        // Debug: log short description to verify we're capturing it
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log('Short Description for product ' . $page->ID . ': ' . $short_description);
+        }
+
         // Check if this post is a WooCommerce product
         $product = wc_get_product($page->ID);
 
@@ -356,4 +361,3 @@ function extract_text_from_all_pages() {
 
     echo '<div class="updated"><p>Text extraction from all pages, posts, and products completed. Check the Extracted Texts page.</p></div>';
 }
-
