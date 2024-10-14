@@ -114,7 +114,7 @@ function start_language_switch_buffer() {
 }
 add_action('template_redirect', 'start_language_switch_buffer');
 
-// Function to process the buffer and replace text with translations, with debug logging and language matching
+// Function to process the buffer and replace text with translations, allowing for partial language matches (e.g., 'en' matches 'en_US' or 'en_GB')
 function process_translations_in_buffer($content) {
     global $wpdb;
 
@@ -126,16 +126,6 @@ function process_translations_in_buffer($content) {
         error_log("Detected browser language: " . $browser_lang);
     }
 
-    // Map browser language to full WordPress locale
-    $language_map = [
-        'en' => 'en_US',
-        'tr' => 'tr_TR',
-        // Add more mappings as needed for your site
-    ];
-    
-    // Use full locale if available, otherwise fallback to the 2-letter code
-    $wp_lang = isset($language_map[$browser_lang]) ? $language_map[$browser_lang] : $browser_lang;
-
     // Get all extracted texts from the database
     $table_name = $wpdb->prefix . 'extracted_texts';
     $translation_table_name = $wpdb->prefix . 'extracted_text_translations';
@@ -144,18 +134,18 @@ function process_translations_in_buffer($content) {
 
     // Replace each original text with its translation, if available
     foreach ($extracted_texts as $text) {
-        // Get the translated text for the user's browser language or full locale
+        // Query for translations where the first two characters of the target language match the browser language
         $translated_text = $wpdb->get_var($wpdb->prepare(
-            "SELECT translated_text FROM $translation_table_name WHERE extracted_text_id = %d AND target_language = %s",
-            $text->id, $wp_lang
+            "SELECT translated_text FROM $translation_table_name WHERE extracted_text_id = %d AND LOWER(SUBSTRING(target_language, 1, 2)) = %s",
+            $text->id, strtolower($browser_lang)
         ));
 
-        // Log whether a translation was found and what language was used
+        // Log whether a translation was found and the matched language
         if (defined('WP_DEBUG') && WP_DEBUG) {
             if (!empty($translated_text)) {
-                error_log("Translation found for text ID " . $text->id . " in language " . $wp_lang);
+                error_log("Translation found for text ID " . $text->id . " for browser language " . $browser_lang);
             } else {
-                error_log("No translation found for text ID " . $text->id . ". Expected language: " . $wp_lang);
+                error_log("No translation found for text ID " . $text->id . " for browser language " . $browser_lang);
             }
         }
 
