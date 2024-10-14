@@ -262,8 +262,11 @@ function extract_text_from_page($page_id = null) {
     // Get the content of the page
     $page_content = get_post_field('post_content', $page_id);
 
-    // Use regex to extract text from HTML (you may need to adjust based on your content structure)
-    // This example is extracting text from within HTML tags
+    // Remove inline <style> and <script> tags and their content
+    $page_content = preg_replace('#<style(.*?)>(.*?)</style>#is', '', $page_content);
+    $page_content = preg_replace('#<script(.*?)>(.*?)</script>#is', '', $page_content);
+
+    // Use regex to extract text from within HTML tags
     preg_match_all('/>([^<>]+)</', $page_content, $matches);
 
     if (!empty($matches[1])) {
@@ -271,16 +274,21 @@ function extract_text_from_page($page_id = null) {
             // Sanitize and clean up extracted text
             $extracted_text = trim(strip_tags($extracted_text));
 
+            // Skip empty strings and texts that are only numbers/punctuation/symbols
+            if (empty($extracted_text) || preg_match('/^[\W\d]+$/', $extracted_text)) {
+                continue;
+            }
+
             // Check if this text already exists in the database to avoid duplicates
             $existing_text = $wpdb->get_var($wpdb->prepare("SELECT id FROM $table_name WHERE original_text = %s", $extracted_text));
 
-            if (!$existing_text && !empty($extracted_text)) {
+            if (!$existing_text) {
                 // Insert the extracted text into the database
                 $wpdb->insert(
                     $table_name,
                     [
                         'original_text' => $extracted_text,
-                        'source_language' => get_locale() // Use WordPress' default language as the source
+                        'source_language' => get_locale(), // Use WordPress' default language as the source
                     ]
                 );
             }
@@ -289,5 +297,6 @@ function extract_text_from_page($page_id = null) {
 
     echo '<div class="updated"><p>Text extraction completed. Check the Extracted Texts page.</p></div>';
 }
+
 
 
