@@ -108,31 +108,32 @@ function deepl_api_key_callback() {
     echo '<input type="text" name="deepl_api_key" value="' . esc_attr($deepl_api_key) . '" size="40">';
 }
 
-// Function to capture and process the page content using output buffering
-function start_language_switch_buffer() {
-    ob_start('process_translations_in_buffer');
-}
-add_action('template_redirect', 'start_language_switch_buffer');
-
-// Function to process the buffer and replace text with translations
+// Function to process the buffer and replace text with translations, allowing for partial language matches (e.g., 'en' matches 'en_US' or 'en_GB')
 function process_translations_in_buffer($content) {
     global $wpdb;
 
-    // Get user's browser language
+    // Get user's browser language (2-letter code)
     $browser_lang = substr($_SERVER['HTTP_ACCEPT_LANGUAGE'], 0, 2);
+
+    // Log the detected browser language
+    if (defined('WP_DEBUG') && WP_DEBUG) {
+        error_log("Detected browser language: " . $browser_lang);
+    }
 
     // Get all extracted texts from the database
     $table_name = $wpdb->prefix . 'extracted_texts';
+    $translation_table_name = $wpdb->prefix . 'extracted_text_translations';
+
     $extracted_texts = $wpdb->get_results("SELECT id, original_text FROM $table_name");
 
-    // Prepare an array for the translations, sorting by the length of the original text (longest first)
+    // Prepare an array to hold the translations and their lengths
     $translations = [];
 
     foreach ($extracted_texts as $text) {
-        // Get the translated text for the user's browser language
+        // Query for translations where the first two characters of the target language match the browser language
         $translated_text = $wpdb->get_var($wpdb->prepare(
-            "SELECT translated_text FROM {$wpdb->prefix}extracted_text_translations WHERE extracted_text_id = %d AND target_language = %s",
-            $text->id, $browser_lang
+            "SELECT translated_text FROM $translation_table_name WHERE extracted_text_id = %d AND LOWER(SUBSTRING(target_language, 1, 2)) = %s",
+            $text->id, strtolower($browser_lang)
         ));
 
         // If a translation is found, store it in the array with its length
@@ -140,17 +141,17 @@ function process_translations_in_buffer($content) {
             $translations[] = [
                 'original'    => $text->original_text,
                 'translation' => $translated_text,
-                'length'      => strlen($text->original_text) // Store length for sorting
+                'length'      => strlen($text->original_text) // Store the length for sorting
             ];
         }
     }
 
-    // Sort translations by length, longest first
+    // Sort the translations by the length of the original text, longest first
     usort($translations, function($a, $b) {
         return $b['length'] - $a['length']; // Sort by length in descending order
     });
 
-    // Apply translations in sorted order (longest first)
+    // Apply the translations in order, longest first
     foreach ($translations as $translation) {
         $content = str_replace($translation['original'], $translation['translation'], $content);
     }
