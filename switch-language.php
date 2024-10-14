@@ -299,18 +299,23 @@ function extract_text_from_all_pages() {
         // Get the product short description (WooCommerce-specific)
         $short_description = get_post_meta($page->ID, '_short_description', true);
 
-        // Get product attributes ("Additional Information" or "Ek Bilgi")
-        $attributes = wc_get_product($page->ID)->get_attributes();
+        // Check if this post is a WooCommerce product
+        $product = wc_get_product($page->ID);
 
-        // Add content from the product title, description, short description, and attributes
-        $content_to_extract .= $page_title . "\n" . $page_content . "\n" . $short_description;
+        // If it's a product, get its attributes ("Additional Information" or "Ek Bilgi")
+        if ($product) {
+            $attributes = $product->get_attributes();
 
-        // Add product attributes ("Additional Information")
-        if (!empty($attributes)) {
-            foreach ($attributes as $attribute) {
-                $content_to_extract .= "\n" . wc_attribute_label($attribute->get_name()) . ": " . implode(', ', $attribute->get_options());
+            // Add content from product attributes ("Additional Information")
+            if (!empty($attributes)) {
+                foreach ($attributes as $attribute) {
+                    $content_to_extract .= "\n" . wc_attribute_label($attribute->get_name()) . ": " . implode(', ', $attribute->get_options());
+                }
             }
         }
+
+        // Combine title, content, and short description for text extraction
+        $content_to_extract .= $page_title . "\n" . $page_content . "\n" . $short_description;
 
         // Remove inline <style> and <script> tags and their content
         $content_to_extract = preg_replace('#<style(.*?)>(.*?)</style>#is', '', $content_to_extract);
@@ -351,3 +356,4 @@ function extract_text_from_all_pages() {
 
     echo '<div class="updated"><p>Text extraction from all pages, posts, and products completed. Check the Extracted Texts page.</p></div>';
 }
+
