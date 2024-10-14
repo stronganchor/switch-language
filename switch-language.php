@@ -123,13 +123,15 @@ function process_translations_in_buffer($content) {
 
     // Get all extracted texts from the database
     $table_name = $wpdb->prefix . 'extracted_texts';
+    $translation_table_name = $wpdb->prefix . 'extracted_text_translations';
+
     $extracted_texts = $wpdb->get_results("SELECT id, original_text FROM $table_name");
 
     // Replace each original text with its translation, if available
     foreach ($extracted_texts as $text) {
         // Get the translated text for the user's browser language
         $translated_text = $wpdb->get_var($wpdb->prepare(
-            "SELECT translated_text FROM {$wpdb->prefix}extracted_text_translations WHERE extracted_text_id = %d AND target_language = %s",
+            "SELECT translated_text FROM $translation_table_name WHERE extracted_text_id = %d AND target_language = %s",
             $text->id, $browser_lang
         ));
 
