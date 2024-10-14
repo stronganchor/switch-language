@@ -84,28 +84,30 @@ function deepl_get_language_json($type = 'target') {
     }
 
     $endpoint = 'https://api-free.deepl.com/v2/languages';
-    $url = $endpoint . '?type=' . $type; // Add the type parameter to the query string
+    $url = add_query_arg('type', $type, $endpoint); // Add type to the query string
 
-    $options = [
-        'http' => [
-            'header' => "Authorization: DeepL-Auth-Key $api_key\r\n",
-            'method' => 'GET',
+    // Use wp_remote_get() to make the API call
+    $response = wp_remote_get($url, [
+        'headers' => [
+            'Authorization' => 'DeepL-Auth-Key ' . $api_key,
         ],
-    ];
+    ]);
 
-    $context = stream_context_create($options);
-    $result = file_get_contents($url, false, $context);
-
-    if ($result === FALSE) {
+    // Check for errors
+    if (is_wp_error($response)) {
         return null;
     }
 
-    $json = json_decode($result, true);
+    // Get the response body
+    $response_body = wp_remote_retrieve_body($response);
+    $json = json_decode($response_body, true);
+
     if (!is_array($json) || empty($json)) {
         return null;
     }
 
-    set_transient($transient_key, $json, DAY_IN_SECONDS); // Cache the result for 24 hours
+    // Cache the result for 24 hours
+    set_transient($transient_key, $json, DAY_IN_SECONDS);
 
     return $json;
 }
