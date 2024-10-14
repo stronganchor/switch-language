@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Switch Language
  * Description: Automatically switches the WordPress site language based on the user's browser language setting
- * Version: 1.1.0
+ * Version: 1.2.0
  * Author: Strong Anchor Tech
  * Author URI: https://stronganchortech.com
  * License: GPL2 or later
@@ -63,7 +63,6 @@ function extract_homepage_text() {
     // Get the homepage content
     $homepage_id = get_option('page_on_front'); // Get the homepage ID
     if ($homepage_id) {
-        // Ensure the content is properly encoded in UTF-8
         $homepage_content = get_post_field('post_content', $homepage_id);
         $homepage_content = mb_convert_encoding($homepage_content, 'UTF-8', 'auto'); // Convert to UTF-8
 
@@ -77,11 +76,10 @@ function extract_homepage_text() {
 
 // Utility function to extract user-facing text from HTML
 function extract_user_facing_text($content) {
-    // Load content into DOMDocument to parse HTML
-    $dom = new DOMDocument('1.0', 'UTF-8'); // Ensure DOMDocument is using UTF-8
-    libxml_use_internal_errors(true); // Suppress warnings for invalid HTML
-    $content = mb_convert_encoding($content, 'HTML-ENTITIES', 'UTF-8'); // Convert content to UTF-8 with entities
-    $dom->loadHTML($content); // Load the content with proper encoding
+    $dom = new DOMDocument('1.0', 'UTF-8');
+    libxml_use_internal_errors(true); 
+    $content = mb_convert_encoding($content, 'HTML-ENTITIES', 'UTF-8');
+    $dom->loadHTML($content);
     libxml_clear_errors();
 
     $xpath = new DOMXPath($dom);
@@ -89,26 +87,23 @@ function extract_user_facing_text($content) {
 
     $extracted_texts = [];
     foreach ($nodes as $node) {
-        $extracted_texts[] = trim($node->nodeValue); // Collect all user-facing texts
+        $extracted_texts[] = trim($node->nodeValue);
     }
 
-    return array_filter($extracted_texts); // Remove empty texts
+    return array_filter($extracted_texts);
 }
 
 // Save the extracted texts into the custom database table without creating duplicates
 function save_extracted_texts($extracted_texts) {
     global $wpdb;
     $table_name = $wpdb->prefix . 'extracted_texts';
-    $source_language = get_locale(); // Use current WordPress locale as source language
+    $source_language = get_locale();
 
-    // Ensure the database connection is set to UTF-8
     $wpdb->query("SET NAMES 'utf8mb4'");
 
     foreach ($extracted_texts as $text) {
-        // Convert text to UTF-8 just before insertion
         $text = mb_convert_encoding($text, 'UTF-8', 'auto');
 
-        // Check if the text already exists in the database
         $exists = $wpdb->get_var($wpdb->prepare(
             "SELECT COUNT(*) FROM $table_name WHERE original_text = %s AND source_language = %s",
             $text, $source_language
@@ -123,19 +118,38 @@ function save_extracted_texts($extracted_texts) {
     }
 }
 
-// Add an admin menu page to display and manage extracted texts
-function add_text_extraction_admin_menu() {
+// Add an admin menu with two sub-pages
+function add_switch_language_admin_menu() {
     add_menu_page(
-        'Extracted Texts', 
-        'Extracted Texts', 
-        'manage_options', 
-        'extracted-texts', 
+        'Switch Language',
+        'Switch Language',
+        'manage_options',
+        'switch-language',
+        'switch_language_settings_page',
+        'dashicons-translation'
+    );
+
+    add_submenu_page(
+        'switch-language',
+        'Extracted Texts',
+        'Extracted Texts',
+        'manage_options',
+        'extracted-texts',
         'display_extracted_texts'
     );
-}
-add_action('admin_menu', 'add_text_extraction_admin_menu');
 
-// Display extracted texts in a table and add buttons for running extraction and emptying the database
+    add_submenu_page(
+        'switch-language',
+        'DeepL API Settings',
+        'DeepL API Settings',
+        'manage_options',
+        'deepl-api-settings',
+        'deepl_api_settings_page'
+    );
+}
+add_action('admin_menu', 'add_switch_language_admin_menu');
+
+// Display extracted texts page
 function display_extracted_texts() {
     global $wpdb;
     $table_name = $wpdb->prefix . 'extracted_texts';
@@ -143,14 +157,11 @@ function display_extracted_texts() {
 
     echo '<div class="wrap">';
     echo '<h1>Extracted Texts</h1>';
-    
-    // Add buttons for running extraction and emptying the database
     echo '<form method="post">';
     submit_button('Run Extraction Again', 'primary', 'run_extraction');
     submit_button('Empty Database', 'delete', 'empty_database');
     echo '</form>';
 
-    // Handle form submissions
     if (isset($_POST['run_extraction'])) {
         extract_homepage_text();
         echo '<div class="updated"><p>Extraction process has been run again.</p></div>';
@@ -161,11 +172,10 @@ function display_extracted_texts() {
         echo '<div class="updated"><p>All extracted texts have been deleted.</p></div>';
     }
 
-    // Display the extracted texts in a table
     echo '<table class="widefat">';
     echo '<thead><tr><th>ID</th><th>Text</th><th>Source Language</th></tr></thead>';
     echo '<tbody>';
-    
+
     if (!empty($results)) {
         foreach ($results as $row) {
             echo '<tr>';
@@ -182,5 +192,50 @@ function display_extracted_texts() {
     echo '</div>';
 }
 
-// Trigger the text extraction on plugin activation
-register_activation_hook(__FILE__, 'extract_homepage_text');
+// DeepL API Settings page
+function deepl_api_settings_page() {
+    ?>
+    <div class="wrap">
+        <h1>DeepL API Settings</h1>
+        <form method="post" action="options.php">
+            <?php
+            settings_fields('deepl_api_settings_group');
+            do_settings_sections('deepl-api-settings');
+            submit_button();
+            ?>
+        </form>
+    </div>
+    <?php
+}
+
+// Register DeepL API settings
+function deepl_api_register_settings() {
+    register_setting('deepl_api_settings_group', 'deepl_api_key');
+
+    add_settings_section(
+        'deepl_api_settings_section',
+        'DeepL API Configuration',
+        null,
+        'deepl-api-settings'
+    );
+
+    add_settings_field(
+        'deepl_api_key',
+        'DeepL API Key',
+        'deepl_api_key_callback',
+        'deepl-api-settings',
+        'deepl_api_settings_section'
+    );
+}
+add_action('admin_init', 'deepl_api_register_settings');
+
+// DeepL API Key field callback
+function deepl_api_key_callback() {
+    $deepl_api_key = get_option('deepl_api_key', '');
+    echo '<input type="text" name="deepl_api_key" value="' . esc_attr($deepl_api_key) . '" size="40">';
+}
+
+// Default settings page
+function switch_language_settings_page() {
+    echo '<h1>Switch Language Plugin Settings</h1>';
+}
