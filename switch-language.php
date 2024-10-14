@@ -114,17 +114,27 @@ function start_language_switch_buffer() {
 }
 add_action('template_redirect', 'start_language_switch_buffer');
 
-// Function to process the buffer and replace text with translations, with debug logging
+// Function to process the buffer and replace text with translations, with debug logging and language matching
 function process_translations_in_buffer($content) {
     global $wpdb;
 
-    // Get user's browser language
+    // Get user's browser language (2-letter code)
     $browser_lang = substr($_SERVER['HTTP_ACCEPT_LANGUAGE'], 0, 2);
 
     // Log the detected browser language
     if (defined('WP_DEBUG') && WP_DEBUG) {
         error_log("Detected browser language: " . $browser_lang);
     }
+
+    // Map browser language to full WordPress locale
+    $language_map = [
+        'en' => 'en_US',
+        'tr' => 'tr_TR',
+        // Add more mappings as needed for your site
+    ];
+    
+    // Use full locale if available, otherwise fallback to the 2-letter code
+    $wp_lang = isset($language_map[$browser_lang]) ? $language_map[$browser_lang] : $browser_lang;
 
     // Get all extracted texts from the database
     $table_name = $wpdb->prefix . 'extracted_texts';
@@ -134,18 +144,18 @@ function process_translations_in_buffer($content) {
 
     // Replace each original text with its translation, if available
     foreach ($extracted_texts as $text) {
-        // Get the translated text for the user's browser language
+        // Get the translated text for the user's browser language or full locale
         $translated_text = $wpdb->get_var($wpdb->prepare(
             "SELECT translated_text FROM $translation_table_name WHERE extracted_text_id = %d AND target_language = %s",
-            $text->id, $browser_lang
+            $text->id, $wp_lang
         ));
 
-        // Log whether a translation was found and what language is needed
+        // Log whether a translation was found and what language was used
         if (defined('WP_DEBUG') && WP_DEBUG) {
             if (!empty($translated_text)) {
-                error_log("Translation found for text ID " . $text->id . " in language " . $browser_lang);
+                error_log("Translation found for text ID " . $text->id . " in language " . $wp_lang);
             } else {
-                error_log("No translation found for text ID " . $text->id . ". Expected language: " . $browser_lang);
+                error_log("No translation found for text ID " . $text->id . ". Expected language: " . $wp_lang);
             }
         }
 
