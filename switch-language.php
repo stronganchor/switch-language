@@ -114,12 +114,17 @@ function start_language_switch_buffer() {
 }
 add_action('template_redirect', 'start_language_switch_buffer');
 
-// Function to process the buffer and replace text with translations
+// Function to process the buffer and replace text with translations, with debug logging
 function process_translations_in_buffer($content) {
     global $wpdb;
 
     // Get user's browser language
     $browser_lang = substr($_SERVER['HTTP_ACCEPT_LANGUAGE'], 0, 2);
+
+    // Log the detected browser language
+    if (defined('WP_DEBUG') && WP_DEBUG) {
+        error_log("Detected browser language: " . $browser_lang);
+    }
 
     // Get all extracted texts from the database
     $table_name = $wpdb->prefix . 'extracted_texts';
@@ -134,6 +139,15 @@ function process_translations_in_buffer($content) {
             "SELECT translated_text FROM $translation_table_name WHERE extracted_text_id = %d AND target_language = %s",
             $text->id, $browser_lang
         ));
+
+        // Log whether a translation was found and what language is needed
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            if (!empty($translated_text)) {
+                error_log("Translation found for text ID " . $text->id . " in language " . $browser_lang);
+            } else {
+                error_log("No translation found for text ID " . $text->id . ". Expected language: " . $browser_lang);
+            }
+        }
 
         // If a translation is found, replace the original text in the page content
         if (!empty($translated_text)) {
