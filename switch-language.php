@@ -108,6 +108,12 @@ function deepl_api_key_callback() {
     echo '<input type="text" name="deepl_api_key" value="' . esc_attr($deepl_api_key) . '" size="40">';
 }
 
+// Function to capture and process the page content using output buffering
+function start_language_switch_buffer() {
+    ob_start('process_translations_in_buffer');
+}
+add_action('template_redirect', 'start_language_switch_buffer');
+
 // Function to process the buffer and replace text with translations, allowing for partial language matches (e.g., 'en' matches 'en_US' or 'en_GB')
 function process_translations_in_buffer($content) {
     global $wpdb;
@@ -126,9 +132,12 @@ function process_translations_in_buffer($content) {
 
     $extracted_texts = $wpdb->get_results("SELECT id, original_text FROM $table_name");
 
-    // Prepare an array to hold the translations and their lengths
-    $translations = [];
+    // Sort the extracted texts by length, longest first
+    usort($extracted_texts, function($a, $b) {
+        return strlen($b->original_text) - strlen($a->original_text); // Sort by the length of original_text
+    });
 
+    // Replace each original text with its translation, if available
     foreach ($extracted_texts as $text) {
         // Query for translations where the first two characters of the target language match the browser language
         $translated_text = $wpdb->get_var($wpdb->prepare(
@@ -136,24 +145,19 @@ function process_translations_in_buffer($content) {
             $text->id, strtolower($browser_lang)
         ));
 
-        // If a translation is found, store it in the array with its length
-        if (!empty($translated_text)) {
-            $translations[] = [
-                'original'    => $text->original_text,
-                'translation' => $translated_text,
-                'length'      => strlen($text->original_text) // Store the length for sorting
-            ];
+        // Log whether a translation was found and the matched language
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            if (!empty($translated_text)) {
+                error_log("Translation found for text ID " . $text->id . " for browser language " . $browser_lang);
+            } else {
+                error_log("No translation found for text ID " . $text->id . " for browser language " . $browser_lang);
+            }
         }
-    }
 
-    // Sort the translations by the length of the original text, longest first
-    usort($translations, function($a, $b) {
-        return $b['length'] - $a['length']; // Sort by length in descending order
-    });
-
-    // Apply the translations in order, longest first
-    foreach ($translations as $translation) {
-        $content = str_replace($translation['original'], $translation['translation'], $content);
+        // If a translation is found, replace the original text in the page content
+        if (!empty($translated_text)) {
+            $content = str_replace($text->original_text, $translated_text, $content);
+        }
     }
 
     // Return the modified content with translations
