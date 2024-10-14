@@ -159,15 +159,17 @@ function process_translations_in_buffer($content) {
     return $content;
 }
 
-// Display extracted texts page with buttons to extract text and clear the database
+// Display extracted texts page with translations
 function display_extracted_texts() {
     global $wpdb;
     $table_name = $wpdb->prefix . 'extracted_texts';
+    $translation_table_name = $wpdb->prefix . 'extracted_text_translations';
+
     $results = $wpdb->get_results("SELECT * FROM $table_name");
 
-    // Handle button actions
+    // Handle button actions (extract texts, clear database, translate texts)
     if (isset($_POST['extract_texts'])) {
-        extract_text_from_all_pages();  // Extract text from all pages and posts
+        extract_text_from_all_pages();  // Extract text from all pages, posts, and WooCommerce products
     }
 
     if (isset($_POST['clear_database'])) {
@@ -185,7 +187,7 @@ function display_extracted_texts() {
 
     // Add buttons to manually extract text, clear database, and translate texts
     echo '<form method="post">';
-    submit_button('Extract Texts from All Pages', 'primary', 'extract_texts', false); // Changed button label
+    submit_button('Extract Texts from All Pages', 'primary', 'extract_texts', false);
     submit_button('Clear Database', 'secondary', 'clear_database', false);
 
     // Translation section with language selection
@@ -216,11 +218,17 @@ function display_extracted_texts() {
 
     if (!empty($results)) {
         foreach ($results as $row) {
+            // Fetch the translation for this text (if available)
+            $translated_text = $wpdb->get_var($wpdb->prepare(
+                "SELECT translated_text FROM $translation_table_name WHERE extracted_text_id = %d",
+                $row->id
+            ));
+
             echo '<tr>';
             echo '<td>' . esc_html($row->id) . '</td>';
             echo '<td>' . esc_html($row->original_text) . '</td>';
             echo '<td>' . esc_html($row->source_language) . '</td>';
-            echo '<td>' . esc_html($row->translated_text ?? '') . '</td>'; // Display translated text if available
+            echo '<td>' . esc_html($translated_text ?? 'No translation available') . '</td>'; // Display translated text if available
             echo '</tr>';
         }
     } else {
