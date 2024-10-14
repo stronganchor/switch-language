@@ -98,6 +98,9 @@ function save_extracted_texts($extracted_texts) {
     $table_name = $wpdb->prefix . 'extracted_texts';
     $source_language = get_locale(); // Use current WordPress locale as source language
 
+    // Set the charset to UTF-8 explicitly
+    $wpdb->query("SET NAMES 'utf8mb4'");
+
     foreach ($extracted_texts as $text) {
         // Check if the text already exists in the database
         $exists = $wpdb->get_var($wpdb->prepare(
