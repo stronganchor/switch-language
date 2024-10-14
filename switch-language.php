@@ -248,29 +248,42 @@ function clear_extracted_texts() {
     echo '<div class="updated"><p>The database has been cleared.</p></div>';
 }
 
-// Function to translate extracted texts using DeepL and store them in the translation table
+// Function to translate extracted texts using DeepL and display in admin page
 function translate_and_display_texts($source_lang, $target_lang, $results) {
     global $wpdb;
+    $table_name = $wpdb->prefix . 'extracted_texts';
     $translation_table_name = $wpdb->prefix . 'extracted_text_translations';
 
     foreach ($results as $row) {
+        // Check if this text already has a translation in the target language
+        $existing_translation = $wpdb->get_var($wpdb->prepare(
+            "SELECT translated_text FROM $translation_table_name WHERE extracted_text_id = %d AND target_language = %s",
+            $row->id,
+            $target_lang
+        ));
+
+        // If a translation already exists, skip translating it again
+        if (!empty($existing_translation)) {
+            continue; // Skip this text
+        }
+
         // Translate the text using DeepL
         $translated_text = deepl_translate_text($row->original_text, $target_lang, $source_lang);
 
-        if (!is_wp_error($translated_text)) {
-            // Store the translation in the translations table
-            $wpdb->replace(
+        if (!is_wp_error($translated_text) && !empty($translated_text)) {
+            // Insert the new translation into the database
+            $wpdb->insert(
                 $translation_table_name,
                 [
                     'extracted_text_id' => $row->id,
-                    'target_language'   => $target_lang,
                     'translated_text'   => $translated_text,
+                    'target_language'   => $target_lang,
                 ]
             );
         }
     }
 
-    echo '<div class="updated"><p>All texts have been translated and stored in the database.</p></div>';
+    echo '<div class="updated"><p>All texts have been translated and displayed below.</p></div>';
 }
 
 // Function to extract text from all published pages, posts, and WooCommerce products
