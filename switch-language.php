@@ -159,17 +159,15 @@ function process_translations_in_buffer($content) {
     return $content;
 }
 
-// Display extracted texts page with translations
+// Display extracted texts page with buttons to extract text and clear the database
 function display_extracted_texts() {
     global $wpdb;
     $table_name = $wpdb->prefix . 'extracted_texts';
-    $translation_table_name = $wpdb->prefix . 'extracted_text_translations';
-    
     $results = $wpdb->get_results("SELECT * FROM $table_name");
 
-    // Handle button actions (extract texts, clear database, translate texts)
+    // Handle button actions
     if (isset($_POST['extract_texts'])) {
-        extract_text_from_page();  // Extract text from homepage (or provide a specific page ID)
+        extract_text_from_all_pages();  // Extract text from all pages and posts
     }
 
     if (isset($_POST['clear_database'])) {
@@ -187,7 +185,7 @@ function display_extracted_texts() {
 
     // Add buttons to manually extract text, clear database, and translate texts
     echo '<form method="post">';
-    submit_button('Extract Texts from Homepage', 'primary', 'extract_texts', false);
+    submit_button('Extract Texts from All Pages', 'primary', 'extract_texts', false); // Changed button label
     submit_button('Clear Database', 'secondary', 'clear_database', false);
 
     // Translation section with language selection
@@ -211,24 +209,18 @@ function display_extracted_texts() {
     submit_button('Translate Texts', 'primary', 'translate_texts');
     echo '</form>';
 
-    // Display extracted texts in a table, including translations
+    // Display extracted texts in a table
     echo '<table class="widefat">';
     echo '<thead><tr><th>ID</th><th>Text</th><th>Source Language</th><th>Translated Text</th></tr></thead>';
     echo '<tbody>';
 
     if (!empty($results)) {
         foreach ($results as $row) {
-            // Fetch the translation for this text (if available)
-            $translated_text = $wpdb->get_var($wpdb->prepare(
-                "SELECT translated_text FROM $translation_table_name WHERE extracted_text_id = %d",
-                $row->id
-            ));
-
             echo '<tr>';
             echo '<td>' . esc_html($row->id) . '</td>';
             echo '<td>' . esc_html($row->original_text) . '</td>';
             echo '<td>' . esc_html($row->source_language) . '</td>';
-            echo '<td>' . esc_html($translated_text ?? '') . '</td>'; // Display translated text if available
+            echo '<td>' . esc_html($row->translated_text ?? '') . '</td>'; // Display translated text if available
             echo '</tr>';
         }
     } else {
@@ -238,7 +230,6 @@ function display_extracted_texts() {
     echo '</tbody></table>';
     echo '</div>';
 }
-
 
 // Function to clear the extracted texts and translations from the database
 function clear_extracted_texts() {
@@ -274,54 +265,59 @@ function translate_and_display_texts($source_lang, $target_lang, $results) {
     echo '<div class="updated"><p>All texts have been translated and stored in the database.</p></div>';
 }
 
-// Function to extract texts from a specific page (e.g., homepage) and add them to the database
-function extract_text_from_page($page_id = null) {
+// Function to extract text from all published pages and posts and add unique texts to the database
+function extract_text_from_all_pages() {
     global $wpdb;
     $table_name = $wpdb->prefix . 'extracted_texts';
 
-    if (is_null($page_id)) {
-        // Default to homepage if no page_id is provided
-        $page_id = get_option('page_on_front');
-    }
+    // Query all published pages and posts
+    $args = [
+        'post_type' => ['page', 'post'], // Include pages and posts; adjust if other content types are needed
+        'post_status' => 'publish',
+        'posts_per_page' => -1 // Get all posts and pages
+    ];
+    $pages = get_posts($args);
 
-    // Get the content of the page
-    $page_content = get_post_field('post_content', $page_id);
+    foreach ($pages as $page) {
+        // Get the content of each page
+        $page_content = $page->post_content;
 
-    // Remove inline <style> and <script> tags and their content
-    $page_content = preg_replace('#<style(.*?)>(.*?)</style>#is', '', $page_content);
-    $page_content = preg_replace('#<script(.*?)>(.*?)</script>#is', '', $page_content);
+        // Remove inline <style> and <script> tags and their content
+        $page_content = preg_replace('#<style(.*?)>(.*?)</style>#is', '', $page_content);
+        $page_content = preg_replace('#<script(.*?)>(.*?)</script>#is', '', $page_content);
 
-    // Use regex to extract text from within HTML tags
-    preg_match_all('/>([^<>]+)</', $page_content, $matches);
+        // Use regex to extract text from within HTML tags
+        preg_match_all('/>([^<>]+)</', $page_content, $matches);
 
-    if (!empty($matches[1])) {
-        foreach ($matches[1] as $extracted_text) {
-            // Sanitize and clean up extracted text
-            $extracted_text = trim(strip_tags($extracted_text));
+        if (!empty($matches[1])) {
+            foreach ($matches[1] as $extracted_text) {
+                // Sanitize and clean up extracted text
+                $extracted_text = trim(strip_tags($extracted_text));
 
-            // Skip empty strings and texts that are only numbers/punctuation/symbols
-            if (empty($extracted_text) || preg_match('/^[\W\d]+$/', $extracted_text)) {
-                continue;
-            }
+                // Skip empty strings and texts that are only numbers/punctuation/symbols
+                if (empty($extracted_text) || preg_match('/^[\W\d]+$/', $extracted_text)) {
+                    continue;
+                }
 
-            // Check if this text already exists in the database to avoid duplicates
-            $existing_text = $wpdb->get_var($wpdb->prepare("SELECT id FROM $table_name WHERE original_text = %s", $extracted_text));
+                // Check if this text already exists in the database to avoid duplicates
+                $existing_text = $wpdb->get_var($wpdb->prepare(
+                    "SELECT id FROM $table_name WHERE original_text = %s", 
+                    $extracted_text
+                ));
 
-            if (!$existing_text) {
-                // Insert the extracted text into the database
-                $wpdb->insert(
-                    $table_name,
-                    [
-                        'original_text' => $extracted_text,
-                        'source_language' => get_locale(), // Use WordPress' default language as the source
-                    ]
-                );
+                if (!$existing_text && !empty($extracted_text)) {
+                    // Insert the unique extracted text into the database
+                    $wpdb->insert(
+                        $table_name,
+                        [
+                            'original_text' => $extracted_text,
+                            'source_language' => get_locale(), // Use WordPress' default language as the source
+                        ]
+                    );
+                }
             }
         }
     }
 
-    echo '<div class="updated"><p>Text extraction completed. Check the Extracted Texts page.</p></div>';
+    echo '<div class="updated"><p>Text extraction from all pages and posts completed. Check the Extracted Texts page.</p></div>';
 }
-
-
-
