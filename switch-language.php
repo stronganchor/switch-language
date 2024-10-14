@@ -159,37 +159,6 @@ function save_extracted_texts($extracted_texts) {
     }
 }
 
-// Add an admin menu with two sub-pages
-function add_switch_language_admin_menu() {
-    add_menu_page(
-        'Switch Language',
-        'Switch Language',
-        'manage_options',
-        'switch-language',
-        'switch_language_settings_page',
-        'dashicons-translation'
-    );
-
-    add_submenu_page(
-        'switch-language',
-        'Extracted Texts',
-        'Extracted Texts',
-        'manage_options',
-        'extracted-texts',
-        'display_extracted_texts'
-    );
-
-    add_submenu_page(
-        'switch-language',
-        'DeepL API Settings',
-        'DeepL API Settings',
-        'manage_options',
-        'deepl-api-settings',
-        'deepl_api_settings_page'
-    );
-}
-add_action('admin_menu', 'add_switch_language_admin_menu');
-
 // Display extracted texts page
 function display_extracted_texts() {
     global $wpdb;
