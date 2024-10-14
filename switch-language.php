@@ -64,6 +64,37 @@ function add_switch_language_admin_menu() {
 }
 add_action('admin_menu', 'add_switch_language_admin_menu');
 
+// Create the custom tables for storing extracted texts and translations
+function create_text_translation_tables() {
+    global $wpdb;
+    $charset_collate = $wpdb->get_charset_collate();
+
+    // Table to store original extracted texts
+    $table_name = $wpdb->prefix . 'extracted_texts';
+    $sql = "CREATE TABLE $table_name (
+        id mediumint(9) NOT NULL AUTO_INCREMENT,
+        original_text text NOT NULL,
+        source_language varchar(10) NOT NULL,
+        translated_text text DEFAULT NULL,
+        PRIMARY KEY  (id)
+    ) $charset_collate;";
+    require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
+    dbDelta($sql);
+
+    // Table to store translations
+    $translation_table_name = $wpdb->prefix . 'extracted_text_translations';
+    $sql = "CREATE TABLE $translation_table_name (
+        id mediumint(9) NOT NULL AUTO_INCREMENT,
+        extracted_text_id mediumint(9) NOT NULL,
+        target_language varchar(10) NOT NULL,
+        translated_text text NOT NULL,
+        PRIMARY KEY  (id),
+        FOREIGN KEY (extracted_text_id) REFERENCES $table_name(id) ON DELETE CASCADE
+    ) $charset_collate;";
+    dbDelta($sql);
+}
+register_activation_hook(__FILE__, 'create_text_translation_tables');
+
 // Register DeepL API settings
 function deepl_api_register_settings() {
     register_setting('deepl_api_settings_group', 'deepl_api_key');
@@ -173,24 +204,27 @@ function display_extracted_texts() {
     echo '</div>';
 }
 
-// Function to translate extracted texts using DeepL and display in admin page
+// Function to translate extracted texts using DeepL and store them in the translation table
 function translate_and_display_texts($source_lang, $target_lang, $results) {
     global $wpdb;
-    $table_name = $wpdb->prefix . 'extracted_texts';
+    $translation_table_name = $wpdb->prefix . 'extracted_text_translations';
 
     foreach ($results as $row) {
         // Translate the text using DeepL
         $translated_text = deepl_translate_text($row->original_text, $target_lang, $source_lang);
 
         if (!is_wp_error($translated_text)) {
-            // Update the database to include the translated text
-            $wpdb->update(
-                $table_name,
-                ['translated_text' => $translated_text],
-                ['id' => $row->id]
+            // Store the translation in the translations table
+            $wpdb->replace(
+                $translation_table_name,
+                [
+                    'extracted_text_id' => $row->id,
+                    'target_language'   => $target_lang,
+                    'translated_text'   => $translated_text,
+                ]
             );
         }
     }
 
-    echo '<div class="updated"><p>All texts have been translated and displayed below.</p></div>';
+    echo '<div class="updated"><p>All texts have been translated and stored in the database.</p></div>';
 }
