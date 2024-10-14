@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Switch Language
  * Description: Automatically switches the WordPress site language based on the user's browser language setting
- * Version: 1.2.0
+ * Version: 1.3.0
  * Author: Strong Anchor Tech
  * Author URI: https://stronganchortech.com
  * License: GPL2 or later
