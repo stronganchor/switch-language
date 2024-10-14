@@ -63,7 +63,9 @@ function extract_homepage_text() {
     // Get the homepage content
     $homepage_id = get_option('page_on_front'); // Get the homepage ID
     if ($homepage_id) {
+        // Ensure the content is properly encoded in UTF-8
         $homepage_content = get_post_field('post_content', $homepage_id);
+        $homepage_content = mb_convert_encoding($homepage_content, 'UTF-8', 'auto'); // Convert to UTF-8
 
         // Extract text from HTML content
         $extracted_texts = extract_user_facing_text($homepage_content);
@@ -76,9 +78,10 @@ function extract_homepage_text() {
 // Utility function to extract user-facing text from HTML
 function extract_user_facing_text($content) {
     // Load content into DOMDocument to parse HTML
-    $dom = new DOMDocument();
+    $dom = new DOMDocument('1.0', 'UTF-8'); // Ensure DOMDocument is using UTF-8
     libxml_use_internal_errors(true); // Suppress warnings for invalid HTML
-    $dom->loadHTML($content);
+    $content = mb_convert_encoding($content, 'HTML-ENTITIES', 'UTF-8'); // Convert content to UTF-8 with entities
+    $dom->loadHTML($content); // Load the content with proper encoding
     libxml_clear_errors();
 
     $xpath = new DOMXPath($dom);
@@ -98,10 +101,13 @@ function save_extracted_texts($extracted_texts) {
     $table_name = $wpdb->prefix . 'extracted_texts';
     $source_language = get_locale(); // Use current WordPress locale as source language
 
-    // Set the charset to UTF-8 explicitly
+    // Ensure the database connection is set to UTF-8
     $wpdb->query("SET NAMES 'utf8mb4'");
 
     foreach ($extracted_texts as $text) {
+        // Convert text to UTF-8 just before insertion
+        $text = mb_convert_encoding($text, 'UTF-8', 'auto');
+
         // Check if the text already exists in the database
         $exists = $wpdb->get_var($wpdb->prepare(
             "SELECT COUNT(*) FROM $table_name WHERE original_text = %s AND source_language = %s",
