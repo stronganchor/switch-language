@@ -5,7 +5,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Perform translation with DeepL API using wp_remote_post
-function deepl_translate_text($text, $translate_to_lang, $translate_from_lang) {
+function sl_deepl_translate_text($text, $translate_to_lang, $translate_from_lang) {
     $api_key = get_option('deepl_api_key'); // Retrieve the API key from WordPress options
     if (empty($api_key)) {
         return null;
@@ -50,7 +50,7 @@ function deepl_translate_text($text, $translate_to_lang, $translate_from_lang) {
 }
 
 // Get the translation languages from the DeepL API
-function deepl_get_language_names($no_parentheses = false, $type = 'target') {
+function sl_deepl_get_language_names($no_parentheses = false, $type = 'target') {
     $json = deepl_get_language_json();
 
     // Remove parentheses and duplicate entries if no_parentheses is true
@@ -121,11 +121,11 @@ function deepl_get_language_json($type = 'target') {
 }
 
 // Test the DeepL API with a shortcode [test_deepl_api]
-function test_deepl_api_shortcode() {
+function sl_test_deepl_api_shortcode() {
     $output = '';
 
     // Test the get_deepl_language_names function
-    $languages = deepl_get_language_names();
+    $languages = sl_deepl_get_language_names();
     if ($languages === null) {
         $output .= 'Failed to retrieve language names.<br>';
     } else {
@@ -133,11 +133,11 @@ function test_deepl_api_shortcode() {
     }
 
     // Test the deepl_translate_text function
-    $translated_text = deepl_translate_text('Merhaba Dünya!', 'EN', 'TR');
+    $translated_text = sl_deepl_translate_text('Merhaba Dünya!', 'EN', 'TR');
     if ($translated_text === null) {
         $output .= 'Translation failed. Please check your API key.<br>';
     }
     $output .= 'Translated text from Turkish: ' . $translated_text . '<br>';
     return $output;
 }
-add_shortcode('test_deepl_api', 'test_deepl_api_shortcode');
+add_shortcode('test_deepl_api', 'sl_test_deepl_api_shortcode');
