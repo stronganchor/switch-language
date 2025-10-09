@@ -123,14 +123,14 @@ function create_text_translation_tables() {
 register_activation_hook(__FILE__, 'create_text_translation_tables');
 
 // Register DeepL API settings
-function deepl_api_register_settings() {
+function sl_deepl_api_register_settings() {
     register_setting('deepl_api_settings_group', 'deepl_api_key');
     add_settings_section('deepl_api_settings_section', 'DeepL API Configuration', null, 'deepl-api-settings');
     add_settings_field('deepl_api_key', 'DeepL API Key', 'deepl_api_key_callback', 'deepl-api-settings', 'deepl_api_settings_section');
 }
-add_action('admin_init', 'deepl_api_register_settings');
+add_action('admin_init', 'sl_deepl_api_register_settings');
 
-function deepl_api_key_callback() {
+function sl_deepl_api_key_callback() {
     $deepl_api_key = get_option('deepl_api_key', '');
     echo '<input type="text" name="deepl_api_key" value="' . esc_attr($deepl_api_key) . '" size="40">';
 }
@@ -226,7 +226,7 @@ function display_extracted_texts() {
     echo '<h2>Translate Extracted Texts</h2>';
     echo '<label for="source_lang">Source Language: </label>';
     echo '<select name="source_lang" id="source_lang">';
-    $source_languages = deepl_get_language_codes();
+    $source_languages = sl_deepl_get_language_codes();
     foreach ($source_languages as $code => $name) {
         echo "<option value='$code'>$name</option>";
     }
@@ -234,7 +234,7 @@ function display_extracted_texts() {
 
     echo '<label for="target_lang">Target Language: </label>';
     echo '<select name="target_lang" id="target_lang">';
-    $target_languages = deepl_get_language_codes();
+    $target_languages = sl_deepl_get_language_codes();
     foreach ($target_languages as $code => $name) {
         echo "<option value='$code'>$name</option>";
     }
@@ -300,7 +300,7 @@ function translate_and_display_texts($source_lang, $target_lang, $results) {
         }
 
         // Translate the text using DeepL
-        $translated_text = deepl_translate_text($row->original_text, $target_lang, $source_lang);
+        $translated_text = sl_deepl_translate_text($row->original_text, $target_lang, $source_lang);
 
         if (!is_wp_error($translated_text) && !empty($translated_text)) {
             // Insert the new translation into the database
