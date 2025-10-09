@@ -17,8 +17,7 @@ if (!defined('ABSPATH')) {
 require_once plugin_dir_path(__FILE__) . 'includes/deepl-translation.php';
 
 // Switch the site language based on the user's browser language
-// Switch the site language based on the user's browser language
-function switch_language() {
+function sl_switch_language() {
     if (is_admin() || !isset($_SERVER['HTTP_ACCEPT_LANGUAGE'])) {
         return;
     }
@@ -39,7 +38,7 @@ function switch_language() {
         });
     }
 }
-add_action('plugins_loaded', 'switch_language', 1);
+add_action('plugins_loaded', 'sl_switch_language', 1);
 
 // Add an admin menu with sub-pages
 function add_switch_language_admin_menu() {
