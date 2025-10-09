@@ -41,13 +41,13 @@ function sl_switch_language() {
 add_action('plugins_loaded', 'sl_switch_language', 1);
 
 // Add an admin menu with sub-pages
-function add_switch_language_admin_menu() {
+function sl_add_switch_language_admin_menu() {
     add_menu_page(
         'Switch Language',
         'Switch Language',
         'manage_options',
         'switch-language',
-        'switch_language_settings_page',
+        'sl_switch_language_settings_page',
         'dashicons-translation'
     );
 
@@ -57,7 +57,7 @@ function add_switch_language_admin_menu() {
         'Extracted Texts',
         'manage_options',
         'extracted-texts',
-        'display_extracted_texts'
+        'sl_display_extracted_texts'
     );
 
     add_submenu_page(
@@ -65,14 +65,14 @@ function add_switch_language_admin_menu() {
         'DeepL API Settings',
         'DeepL API Settings',
         'manage_options',
-        'deepl-api-settings',
-        'deepl_api_settings_page'
+        'sl-deepl-api-settings',
+        'sl_deepl_api_settings_page'
     );
 }
-add_action('admin_menu', 'add_switch_language_admin_menu');
+add_action('admin_menu', 'sl_add_switch_language_admin_menu');
 
 // Settings page for the main Switch Language menu
-function switch_language_settings_page() {
+function sl_switch_language_settings_page() {
     echo '<div class="wrap">';
     echo '<h1>Switch Language Settings</h1>';
     echo '<p>This plugin automatically switches the WordPress site language based on the user\'s browser language setting.</p>';
@@ -92,7 +92,7 @@ function switch_language_settings_page() {
 }
 
 // Create the custom tables for storing extracted texts and translations
-function create_text_translation_tables() {
+function sl_create_text_translation_tables() {
     global $wpdb;
     $charset_collate = $wpdb->get_charset_collate();
 
@@ -120,29 +120,44 @@ function create_text_translation_tables() {
     ) $charset_collate;";
     dbDelta($sql);
 }
-register_activation_hook(__FILE__, 'create_text_translation_tables');
+register_activation_hook(__FILE__, 'sl_create_text_translation_tables');
 
 // Register DeepL API settings
 function sl_deepl_api_register_settings() {
-    register_setting('deepl_api_settings_group', 'deepl_api_key');
-    add_settings_section('deepl_api_settings_section', 'DeepL API Configuration', null, 'deepl-api-settings');
-    add_settings_field('deepl_api_key', 'DeepL API Key', 'deepl_api_key_callback', 'deepl-api-settings', 'deepl_api_settings_section');
+    register_setting('sl_deepl_api_settings_group', 'sl_deepl_api_key');
+    add_settings_section('sl_deepl_api_settings_section', 'DeepL API Configuration', null, 'sl-deepl-api-settings');
+    add_settings_field('sl_deepl_api_key', 'DeepL API Key', 'sl_deepl_api_key_callback', 'sl-deepl-api-settings', 'sl_deepl_api_settings_section');
 }
 add_action('admin_init', 'sl_deepl_api_register_settings');
 
 function sl_deepl_api_key_callback() {
-    $deepl_api_key = get_option('deepl_api_key', '');
-    echo '<input type="text" name="deepl_api_key" value="' . esc_attr($deepl_api_key) . '" size="40">';
+    $deepl_api_key = get_option('sl_deepl_api_key', '');
+    echo '<input type="text" name="sl_deepl_api_key" value="' . esc_attr($deepl_api_key) . '" size="40">';
+}
+
+// DeepL API Settings page
+function sl_deepl_api_settings_page() {
+    echo '<div class="wrap">';
+    echo '<h1>DeepL API Settings</h1>';
+    echo '<form method="post" action="options.php">';
+    settings_fields('sl_deepl_api_settings_group');
+    do_settings_sections('sl-deepl-api-settings');
+    submit_button();
+    echo '</form>';
+    echo '<hr>';
+    echo '<h2>Test Your API</h2>';
+    echo '<p>Use the shortcode <code>[sl_test_deepl_api]</code> on any page or post to test your DeepL API connection.</p>';
+    echo '</div>';
 }
 
 // Function to capture and process the page content using output buffering
-function start_language_switch_buffer() {
-    ob_start('process_translations_in_buffer');
+function sl_start_language_switch_buffer() {
+    ob_start('sl_process_translations_in_buffer');
 }
-add_action('template_redirect', 'start_language_switch_buffer');
+add_action('template_redirect', 'sl_start_language_switch_buffer');
 
 // Function to process the buffer and replace text with translations, allowing for partial language matches (e.g., 'en' matches 'en_US' or 'en_GB')
-function process_translations_in_buffer($content) {
+function sl_process_translations_in_buffer($content) {
     global $wpdb;
 
     // Get user's browser language (2-letter code)
@@ -161,7 +176,7 @@ function process_translations_in_buffer($content) {
 
     // Sort the extracted texts by length, longest first
     usort($extracted_texts, function($a, $b) {
-        return strlen($b->original_text) - strlen($a->original_text); // Sort by the length of original_text
+        return strlen($b->original_text) - strlen($a->original_text);
     });
 
     // Replace each original text with its translation, if available
@@ -192,7 +207,7 @@ function process_translations_in_buffer($content) {
 }
 
 // Display extracted texts page with translations
-function display_extracted_texts() {
+function sl_display_extracted_texts() {
     global $wpdb;
     $table_name = $wpdb->prefix . 'extracted_texts';
     $translation_table_name = $wpdb->prefix . 'extracted_text_translations';
@@ -201,17 +216,17 @@ function display_extracted_texts() {
 
     // Handle button actions (extract texts, clear database, translate texts)
     if (isset($_POST['extract_texts'])) {
-        extract_text_from_all_pages();  // Extract text from all pages, posts, and WooCommerce products
+        sl_extract_text_from_all_pages();
     }
 
     if (isset($_POST['clear_database'])) {
-        clear_extracted_texts();
+        sl_clear_extracted_texts();
     }
 
     if (isset($_POST['translate_texts'])) {
         $source_lang = sanitize_text_field($_POST['source_lang']);
         $target_lang = sanitize_text_field($_POST['target_lang']);
-        translate_and_display_texts($source_lang, $target_lang, $results);
+        sl_translate_and_display_texts($source_lang, $target_lang, $results);
     }
 
     echo '<div class="wrap">';
@@ -260,7 +275,7 @@ function display_extracted_texts() {
             echo '<td>' . esc_html($row->id) . '</td>';
             echo '<td>' . esc_html($row->original_text) . '</td>';
             echo '<td>' . esc_html($row->source_language) . '</td>';
-            echo '<td>' . esc_html($translated_text ?? 'No translation available') . '</td>'; // Display translated text if available
+            echo '<td>' . esc_html($translated_text ?? 'No translation available') . '</td>';
             echo '</tr>';
         }
     } else {
@@ -272,7 +287,7 @@ function display_extracted_texts() {
 }
 
 // Function to clear the extracted texts and translations from the database
-function clear_extracted_texts() {
+function sl_clear_extracted_texts() {
     global $wpdb;
     $wpdb->query("TRUNCATE TABLE {$wpdb->prefix}extracted_texts");
     $wpdb->query("TRUNCATE TABLE {$wpdb->prefix}extracted_text_translations");
@@ -281,7 +296,7 @@ function clear_extracted_texts() {
 }
 
 // Function to translate extracted texts using DeepL and display in admin page
-function translate_and_display_texts($source_lang, $target_lang, $results) {
+function sl_translate_and_display_texts($source_lang, $target_lang, $results) {
     global $wpdb;
     $table_name = $wpdb->prefix . 'extracted_texts';
     $translation_table_name = $wpdb->prefix . 'extracted_text_translations';
@@ -296,7 +311,7 @@ function translate_and_display_texts($source_lang, $target_lang, $results) {
 
         // If a translation already exists, skip translating it again
         if (!empty($existing_translation)) {
-            continue; // Skip this text
+            continue;
         }
 
         // Translate the text using DeepL
@@ -319,15 +334,15 @@ function translate_and_display_texts($source_lang, $target_lang, $results) {
 }
 
 // Function to extract text from all published pages, posts, and WooCommerce products
-function extract_text_from_all_pages() {
+function sl_extract_text_from_all_pages() {
     global $wpdb;
     $table_name = $wpdb->prefix . 'extracted_texts';
 
     // Query all published pages, posts, and WooCommerce products
     $args = [
-        'post_type' => ['page', 'post', 'product'], // Include WooCommerce 'product' post type
+        'post_type' => ['page', 'post', 'product'],
         'post_status' => 'publish',
-        'posts_per_page' => -1 // Get all posts, pages, and products
+        'posts_per_page' => -1
     ];
     $pages = get_posts($args);
 
@@ -340,7 +355,7 @@ function extract_text_from_all_pages() {
             // Fetch the front-end HTML of the product page
             $response = wp_remote_get($product_url);
             if (is_wp_error($response)) {
-                continue; // Skip if the request failed
+                continue;
             }
 
             $html = wp_remote_retrieve_body($response);
@@ -374,7 +389,7 @@ function extract_text_from_all_pages() {
                             $table_name,
                             [
                                 'original_text' => $extracted_text,
-                                'source_language' => get_locale(), // Use WordPress' default language as the source
+                                'source_language' => get_locale(),
                             ]
                         );
                     }
@@ -421,7 +436,7 @@ function extract_text_from_all_pages() {
                             $table_name,
                             [
                                 'original_text' => $extracted_text,
-                                'source_language' => get_locale(), // Use WordPress' default language as the source
+                                'source_language' => get_locale(),
                             ]
                         );
                     }
