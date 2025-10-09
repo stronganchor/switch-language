@@ -17,21 +17,29 @@ if (!defined('ABSPATH')) {
 require_once plugin_dir_path(__FILE__) . 'includes/deepl-translation.php';
 
 // Switch the site language based on the user's browser language
+// Switch the site language based on the user's browser language
 function switch_language() {
-    if (!isset($_SERVER['HTTP_ACCEPT_LANGUAGE'])) {
+    if (is_admin() || !isset($_SERVER['HTTP_ACCEPT_LANGUAGE'])) {
         return;
     }
 
     $available_languages = get_available_languages();
+    $available_languages[] = 'en_US'; // Include English as it's always available
+
     $browser_lang = substr($_SERVER['HTTP_ACCEPT_LANGUAGE'], 0, 2);
     $language_map = ['en' => 'en_US', 'tr' => 'tr_TR'];
     $wp_lang = isset($language_map[$browser_lang]) ? $language_map[$browser_lang] : '';
 
-    if (in_array($wp_lang, $available_languages)) {
+    if ($wp_lang && in_array($wp_lang, $available_languages)) {
         switch_to_locale($wp_lang);
+
+        // Also set the locale for the session
+        add_filter('locale', function($locale) use ($wp_lang) {
+            return $wp_lang;
+        });
     }
 }
-add_action('init', 'switch_language');
+add_action('plugins_loaded', 'switch_language', 1);
 
 // Add an admin menu with sub-pages
 function add_switch_language_admin_menu() {
@@ -63,6 +71,26 @@ function add_switch_language_admin_menu() {
     );
 }
 add_action('admin_menu', 'add_switch_language_admin_menu');
+
+// Settings page for the main Switch Language menu
+function switch_language_settings_page() {
+    echo '<div class="wrap">';
+    echo '<h1>Switch Language Settings</h1>';
+    echo '<p>This plugin automatically switches the WordPress site language based on the user\'s browser language setting.</p>';
+    echo '<h2>Current Configuration</h2>';
+    echo '<ul>';
+    echo '<li><strong>Enabled Languages:</strong> ' . implode(', ', get_available_languages()) . '</li>';
+    echo '<li><strong>Default Language:</strong> ' . get_locale() . '</li>';
+    echo '</ul>';
+    echo '<h2>How It Works</h2>';
+    echo '<ol>';
+    echo '<li>The plugin detects the user\'s browser language preference</li>';
+    echo '<li>If a matching language is installed in WordPress, the site content is switched to that language</li>';
+    echo '<li>Custom translations from the "Extracted Texts" feature are also applied when available</li>';
+    echo '</ol>';
+    echo '<p><strong>Note:</strong> Make sure the language files for your desired languages are installed in WordPress (Settings > General > Site Language).</p>';
+    echo '</div>';
+}
 
 // Create the custom tables for storing extracted texts and translations
 function create_text_translation_tables() {
