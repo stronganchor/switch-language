@@ -229,6 +229,11 @@ function sl_display_extracted_texts() {
         sl_translate_and_display_texts($source_lang, $target_lang, $results);
     }
 
+    // Handle custom translation save
+    if (isset($_POST['save_custom_translation'])) {
+        sl_save_custom_translation();
+    }
+
     echo '<div class="wrap">';
     echo '<h1>Extracted Texts</h1>';
 
@@ -242,48 +247,162 @@ function sl_display_extracted_texts() {
     echo '<label for="source_lang">Source Language: </label>';
     echo '<select name="source_lang" id="source_lang">';
     $source_languages = sl_deepl_get_language_codes();
-    foreach ($source_languages as $code => $name) {
-        echo "<option value='$code'>$name</option>";
+    if ($source_languages) {
+        foreach ($source_languages as $code => $name) {
+            echo "<option value='$code'>$name</option>";
+        }
     }
     echo '</select>';
 
     echo '<label for="target_lang">Target Language: </label>';
     echo '<select name="target_lang" id="target_lang">';
     $target_languages = sl_deepl_get_language_codes();
-    foreach ($target_languages as $code => $name) {
-        echo "<option value='$code'>$name</option>";
+    if ($target_languages) {
+        foreach ($target_languages as $code => $name) {
+            echo "<option value='$code'>$name</option>";
+        }
     }
     echo '</select>';
 
     submit_button('Translate Texts', 'primary', 'translate_texts');
     echo '</form>';
 
-    // Display extracted texts in a table
+    // Display extracted texts in a table with custom translation inputs
+    echo '<h2>Extracted Texts and Custom Translations</h2>';
+    echo '<p>Enter custom translations below. You can add translations for multiple languages per text.</p>';
     echo '<table class="widefat">';
-    echo '<thead><tr><th>ID</th><th>Text</th><th>Source Language</th><th>Translated Text</th></tr></thead>';
+    echo '<thead><tr><th>ID</th><th>Original Text</th><th>Source Language</th><th>Target Language</th><th>Translation</th><th>Action</th></tr></thead>';
     echo '<tbody>';
 
     if (!empty($results)) {
         foreach ($results as $row) {
-            // Fetch the translation for this text (if available)
-            $translated_text = $wpdb->get_var($wpdb->prepare(
-                "SELECT translated_text FROM $translation_table_name WHERE extracted_text_id = %d",
+            // Fetch all translations for this text
+            $translations = $wpdb->get_results($wpdb->prepare(
+                "SELECT * FROM $translation_table_name WHERE extracted_text_id = %d",
                 $row->id
             ));
 
-            echo '<tr>';
+            // Display existing translations
+            if (!empty($translations)) {
+                foreach ($translations as $translation) {
+                    echo '<tr>';
+                    echo '<td>' . esc_html($row->id) . '</td>';
+                    echo '<td>' . esc_html($row->original_text) . '</td>';
+                    echo '<td>' . esc_html($row->source_language) . '</td>';
+                    echo '<td>' . esc_html($translation->target_language) . '</td>';
+                    echo '<td>';
+                    echo '<form method="post" style="margin:0;">';
+                    echo '<input type="hidden" name="extracted_text_id" value="' . esc_attr($row->id) . '">';
+                    echo '<input type="hidden" name="translation_id" value="' . esc_attr($translation->id) . '">';
+                    echo '<input type="hidden" name="target_language" value="' . esc_attr($translation->target_language) . '">';
+                    echo '<input type="text" name="translated_text" value="' . esc_attr($translation->translated_text) . '" size="50">';
+                    echo '</td>';
+                    echo '<td>';
+                    submit_button('Update', 'small', 'save_custom_translation', false);
+                    echo '</form>';
+                    echo '</td>';
+                    echo '</tr>';
+                }
+            }
+
+            // Add a row for adding a new translation
+            echo '<tr style="background-color: #f9f9f9;">';
             echo '<td>' . esc_html($row->id) . '</td>';
             echo '<td>' . esc_html($row->original_text) . '</td>';
             echo '<td>' . esc_html($row->source_language) . '</td>';
-            echo '<td>' . esc_html($translated_text ?? 'No translation available') . '</td>';
+            echo '<td>';
+            echo '<form method="post" style="margin:0;">';
+            echo '<input type="hidden" name="extracted_text_id" value="' . esc_attr($row->id) . '">';
+            echo '<select name="target_language">';
+            $available_languages = sl_deepl_get_language_codes();
+            if ($available_languages) {
+                foreach ($available_languages as $code => $name) {
+                    echo "<option value='$code'>$name</option>";
+                }
+            } else {
+                // Fallback if DeepL API is not available
+                echo '<option value="TR">Turkish</option>';
+                echo '<option value="EN">English</option>';
+                echo '<option value="DE">German</option>';
+                echo '<option value="FR">French</option>';
+                echo '<option value="ES">Spanish</option>';
+            }
+            echo '</select>';
+            echo '</td>';
+            echo '<td>';
+            echo '<input type="text" name="translated_text" placeholder="Enter custom translation" size="50">';
+            echo '</td>';
+            echo '<td>';
+            submit_button('Add New', 'small', 'save_custom_translation', false);
+            echo '</form>';
+            echo '</td>';
             echo '</tr>';
         }
     } else {
-        echo '<tr><td colspan="4">No extracted texts found.</td></tr>';
+        echo '<tr><td colspan="6">No extracted texts found. Click "Extract Texts from All Pages" to get started.</td></tr>';
     }
 
     echo '</tbody></table>';
     echo '</div>';
+}
+
+// Function to save custom translations entered by admin
+function sl_save_custom_translation() {
+    global $wpdb;
+    $translation_table_name = $wpdb->prefix . 'extracted_text_translations';
+
+    $extracted_text_id = intval($_POST['extracted_text_id']);
+    $target_language = sanitize_text_field($_POST['target_language']);
+    $translated_text = sanitize_textarea_field($_POST['translated_text']);
+
+    // Check if we're updating an existing translation
+    if (isset($_POST['translation_id']) && !empty($_POST['translation_id'])) {
+        $translation_id = intval($_POST['translation_id']);
+
+        // Update existing translation
+        $wpdb->update(
+            $translation_table_name,
+            ['translated_text' => $translated_text],
+            ['id' => $translation_id],
+            ['%s'],
+            ['%d']
+        );
+
+        echo '<div class="updated"><p>Translation updated successfully.</p></div>';
+    } else {
+        // Check if translation already exists for this text and language
+        $existing = $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM $translation_table_name WHERE extracted_text_id = %d AND target_language = %s",
+            $extracted_text_id,
+            $target_language
+        ));
+
+        if ($existing) {
+            // Update existing
+            $wpdb->update(
+                $translation_table_name,
+                ['translated_text' => $translated_text],
+                [
+                    'extracted_text_id' => $extracted_text_id,
+                    'target_language' => $target_language
+                ],
+                ['%s'],
+                ['%d', '%s']
+            );
+            echo '<div class="updated"><p>Translation updated successfully.</p></div>';
+        } else {
+            // Insert new translation
+            $wpdb->insert(
+                $translation_table_name,
+                [
+                    'extracted_text_id' => $extracted_text_id,
+                    'target_language' => $target_language,
+                    'translated_text' => $translated_text,
+                ]
+            );
+            echo '<div class="updated"><p>Custom translation added successfully.</p></div>';
+        }
+    }
 }
 
 // Function to clear the extracted texts and translations from the database
