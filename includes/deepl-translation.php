@@ -4,7 +4,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// Perform translation with DeepL API
+// Perform translation with DeepL API using wp_remote_post
 function deepl_translate_text($text, $translate_to_lang, $translate_from_lang) {
     $api_key = get_option('deepl_api_key'); // Retrieve the API key from WordPress options
     if (empty($api_key)) {
@@ -12,33 +12,41 @@ function deepl_translate_text($text, $translate_to_lang, $translate_from_lang) {
     }
 
     $endpoint = 'https://api-free.deepl.com/v2/translate';
-    $data = http_build_query([
+
+    // Prepare the request data
+    $data = [
         'auth_key' => $api_key,
         'text' => $text,
         'target_lang' => $translate_to_lang,
         'source_lang' => $translate_from_lang,
-    ]);
-
-    $options = [
-        'http' => [
-            'header'  => "Content-type: application/x-www-form-urlencoded\r\n",
-            'method'  => 'POST',
-            'content' => $data,
-        ],
     ];
 
-    $context = stream_context_create($options);
-    $result = file_get_contents($endpoint, false, $context);
+    // Use wp_remote_post to send the request
+    $response = wp_remote_post($endpoint, [
+        'body' => $data,
+        'headers' => [
+            'Content-Type' => 'application/x-www-form-urlencoded',
+        ],
+    ]);
 
-    if ($result === FALSE) {
-        return null; // return null if translation failed
+    // Check for errors in the response
+    if (is_wp_error($response)) {
+        return null; // Return null if there's an error
     }
 
+    // Get the response body
+    $result = wp_remote_retrieve_body($response);
+
+    // Decode the JSON response
     $json = json_decode($result, true);
+
+    // Check if the translation exists
     if (!is_array($json) || !isset($json['translations'][0]['text'])) {
         return null; // Return null to indicate an unexpected error occurred
     }
-    return $json['translations'][0]['text'] ?? $text; // Return the translation or original text if something goes wrong
+
+    // Return the translated text or the original text if something goes wrong
+    return $json['translations'][0]['text'] ?? $text;
 }
 
 // Get the translation languages from the DeepL API
@@ -77,7 +85,7 @@ function deepl_get_language_json($type = 'target') {
     if ($cached_json !== false) {
         return $cached_json;
     }
-    
+
     $api_key = get_option('deepl_api_key');
     if (empty($api_key)) {
         return null;
