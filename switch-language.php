@@ -135,6 +135,21 @@ function deepl_api_key_callback() {
     echo '<input type="text" name="deepl_api_key" value="' . esc_attr($deepl_api_key) . '" size="40">';
 }
 
+// DeepL API Settings page
+function deepl_api_settings_page() {
+    echo '<div class="wrap">';
+    echo '<h1>DeepL API Settings</h1>';
+    echo '<form method="post" action="options.php">';
+    settings_fields('deepl_api_settings_group');
+    do_settings_sections('deepl-api-settings');
+    submit_button();
+    echo '</form>';
+    echo '<hr>';
+    echo '<h2>Test Your API</h2>';
+    echo '<p>Use the shortcode <code>[test_deepl_api]</code> on any page or post to test your DeepL API connection.</p>';
+    echo '</div>';
+}
+
 // Function to capture and process the page content using output buffering
 function start_language_switch_buffer() {
     ob_start('process_translations_in_buffer');
