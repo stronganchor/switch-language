@@ -6,7 +6,7 @@ if (!defined('ABSPATH')) {
 
 // Perform translation with DeepL API using wp_remote_post
 function sl_deepl_translate_text($text, $translate_to_lang, $translate_from_lang) {
-    $api_key = get_option('deepl_api_key'); // Retrieve the API key from WordPress options
+    $api_key = get_option('sl_deepl_api_key');
     if (empty($api_key)) {
         return null;
     }
@@ -31,7 +31,7 @@ function sl_deepl_translate_text($text, $translate_to_lang, $translate_from_lang
 
     // Check for errors in the response
     if (is_wp_error($response)) {
-        return null; // Return null if there's an error
+        return null;
     }
 
     // Get the response body
@@ -42,7 +42,7 @@ function sl_deepl_translate_text($text, $translate_to_lang, $translate_from_lang
 
     // Check if the translation exists
     if (!is_array($json) || !isset($json['translations'][0]['text'])) {
-        return null; // Return null to indicate an unexpected error occurred
+        return null;
     }
 
     // Return the translated text or the original text if something goes wrong
@@ -51,7 +51,7 @@ function sl_deepl_translate_text($text, $translate_to_lang, $translate_from_lang
 
 // Get the translation languages from the DeepL API
 function sl_deepl_get_language_names($no_parentheses = false, $type = 'target') {
-    $json = deepl_get_language_json();
+    $json = sl_deepl_get_language_json();
 
     // Remove parentheses and duplicate entries if no_parentheses is true
     if ($no_parentheses) {
@@ -68,8 +68,8 @@ function sl_deepl_get_language_names($no_parentheses = false, $type = 'target') 
 }
 
 // Get an array with keys as language codes and values as language names
-function deepl_get_language_codes() {
-    $json = deepl_get_language_json();
+function sl_deepl_get_language_codes() {
+    $json = sl_deepl_get_language_json();
     if ($json === null) {
         return null;
     }
@@ -78,21 +78,21 @@ function deepl_get_language_codes() {
 }
 
 // Get the full language json from the DeepL API
-function deepl_get_language_json($type = 'target') {
-    $transient_key = 'deepl_language_json_' . $type;
+function sl_deepl_get_language_json($type = 'target') {
+    $transient_key = 'sl_deepl_language_json_' . $type;
     $cached_json = get_transient($transient_key);
 
     if ($cached_json !== false) {
         return $cached_json;
     }
 
-    $api_key = get_option('deepl_api_key');
+    $api_key = get_option('sl_deepl_api_key');
     if (empty($api_key)) {
         return null;
     }
 
     $endpoint = 'https://api-free.deepl.com/v2/languages';
-    $url = add_query_arg('type', $type, $endpoint); // Add type to the query string
+    $url = add_query_arg('type', $type, $endpoint);
 
     // Use wp_remote_get() to make the API call
     $response = wp_remote_get($url, [
@@ -120,7 +120,7 @@ function deepl_get_language_json($type = 'target') {
     return $json;
 }
 
-// Test the DeepL API with a shortcode [test_deepl_api]
+// Test the DeepL API with a shortcode [sl_test_deepl_api]
 function sl_test_deepl_api_shortcode() {
     $output = '';
 
@@ -140,4 +140,4 @@ function sl_test_deepl_api_shortcode() {
     $output .= 'Translated text from Turkish: ' . $translated_text . '<br>';
     return $output;
 }
-add_shortcode('test_deepl_api', 'sl_test_deepl_api_shortcode');
+add_shortcode('sl_test_deepl_api', 'sl_test_deepl_api_shortcode');
