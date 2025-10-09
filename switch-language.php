@@ -452,10 +452,13 @@ function sl_translate_and_display_texts($source_lang, $target_lang, $results) {
     echo '<div class="updated"><p>All texts have been translated and displayed below.</p></div>';
 }
 
-// Function to extract text from all published pages, posts, and WooCommerce products
+// Function to extract text from all published pages, posts, WooCommerce products, and navigation menus
 function sl_extract_text_from_all_pages() {
     global $wpdb;
     $table_name = $wpdb->prefix . 'extracted_texts';
+
+    // First, extract text from navigation menus
+    sl_extract_text_from_menus($table_name);
 
     // Query all published pages, posts, and WooCommerce products
     $args = [
@@ -564,5 +567,47 @@ function sl_extract_text_from_all_pages() {
         }
     }
 
-    echo '<div class="updated"><p>Text extraction from all pages, posts, and products completed. Check the Extracted Texts page.</p></div>';
+    echo '<div class="updated"><p>Text extraction from all pages, posts, products, and navigation menus completed. Check the Extracted Texts page.</p></div>';
+}
+
+// Function to extract text from WordPress navigation menus
+function sl_extract_text_from_menus($table_name) {
+    global $wpdb;
+
+    // Get all registered navigation menus
+    $menus = wp_get_nav_menus();
+
+    foreach ($menus as $menu) {
+        // Get all menu items for this menu
+        $menu_items = wp_get_nav_menu_items($menu->term_id);
+
+        if (!empty($menu_items)) {
+            foreach ($menu_items as $menu_item) {
+                // Extract the menu item title
+                $menu_text = trim($menu_item->title);
+
+                // Skip empty strings and texts that are only numbers/punctuation/symbols
+                if (empty($menu_text) || preg_match('/^[\W\d]+$/', $menu_text)) {
+                    continue;
+                }
+
+                // Check if this text already exists in the database to avoid duplicates
+                $existing_text = $wpdb->get_var($wpdb->prepare(
+                    "SELECT id FROM $table_name WHERE BINARY original_text = %s",
+                    $menu_text
+                ));
+
+                if (!$existing_text) {
+                    // Insert the unique extracted text into the database
+                    $wpdb->insert(
+                        $table_name,
+                        [
+                            'original_text' => $menu_text,
+                            'source_language' => get_locale(),
+                        ]
+                    );
+                }
+            }
+        }
+    }
 }
