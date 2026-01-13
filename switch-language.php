@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Switch Language
  * Description: Automatically switches the WordPress site language based on the user's browser language setting
- * Version: 1.3.1
+ * Version: 1.3.2
  * Author: Strong Anchor Tech
  * Author URI: https://stronganchortech.com
  * License: GPL2 or later
@@ -179,6 +179,9 @@ function sl_language_switcher_shortcode($atts) {
     $output .= wp_nonce_field('sl_language_switcher', 'sl_language_switcher_nonce', true, false);
 
     $codes = array_keys($locale_map);
+    if ($current_code !== '' && in_array($current_code, $codes, true)) {
+        $codes = array_values(array_unique(array_merge([$current_code], $codes)));
+    }
     $count = count($codes);
     foreach ($codes as $index => $code) {
         $locale = $locale_map[$code];
@@ -627,6 +630,33 @@ function sl_display_extracted_texts() {
         }
     }
 
+    if (isset($_POST['add_custom_text'])) {
+        if (!empty($_POST['sl_add_custom_text_nonce']) && wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['sl_add_custom_text_nonce'])), 'sl_add_custom_text')) {
+            $source_lang = sl_normalize_source_language(sanitize_text_field($_POST['source_lang']), $available_source_languages);
+            if (empty($source_lang) && !empty($available_source_codes)) {
+                $source_lang = $available_source_codes[0];
+            }
+            if (!empty($source_lang)) {
+                update_option('sl_last_source_lang', $source_lang);
+                $last_source_lang = $source_lang;
+            }
+
+            $custom_text = isset($_POST['custom_text']) ? wp_unslash($_POST['custom_text']) : '';
+            $add_result = sl_add_custom_extracted_text($custom_text, get_locale());
+            if ($add_result['status'] === 'added') {
+                echo '<div class="updated"><p>Custom text added successfully.</p></div>';
+            } elseif ($add_result['status'] === 'exists') {
+                echo '<div class="notice notice-warning"><p>That text already exists in the extracted list.</p></div>';
+            } elseif ($add_result['status'] === 'invalid') {
+                echo '<div class="notice notice-error"><p>Please enter valid text to add.</p></div>';
+            } else {
+                echo '<div class="notice notice-error"><p>Unable to add the custom text. Please try again.</p></div>';
+            }
+        } else {
+            echo '<div class="notice notice-error"><p>Unable to add the custom text due to a security check. Please try again.</p></div>';
+        }
+    }
+
     if (isset($_POST['translate_texts'])) {
         $source_lang = sl_normalize_source_language(sanitize_text_field($_POST['source_lang']), $available_source_languages);
         if (empty($source_lang) && !empty($available_source_codes)) {
@@ -665,6 +695,7 @@ function sl_display_extracted_texts() {
         sl_save_custom_translation();
     }
 
+    $results = $wpdb->get_results("SELECT * FROM $table_name");
     $translations_by_lang = [];
     if (!empty($selected_target_langs) && !empty($results)) {
         $placeholders = implode(',', array_fill(0, count($selected_target_langs), '%s'));
@@ -704,6 +735,15 @@ function sl_display_extracted_texts() {
     }
     echo '</fieldset>';
     submit_button('Update Target Languages', 'secondary', 'save_target_languages');
+    echo '</form>';
+
+    echo '<h2>Add Custom Text</h2>';
+    echo '<p>Add text that the extractor missed. It will appear in all selected language tabs.</p>';
+    echo '<form method="post" class="sl-custom-text">';
+    echo '<textarea name="custom_text" rows="3" style="width:100%; max-width: 800px;"></textarea>';
+    echo '<input type="hidden" name="source_lang" class="sl-source-lang-input" value="' . esc_attr($last_source_lang) . '">';
+    echo wp_nonce_field('sl_add_custom_text', 'sl_add_custom_text_nonce', true, false);
+    submit_button('Add Text', 'secondary', 'add_custom_text', false);
     echo '</form>';
 
     // Display extracted texts in tabbed tables per target language
@@ -903,6 +943,49 @@ function sl_save_custom_translation() {
             echo '<div class="updated"><p>Custom translation added successfully.</p></div>';
         }
     }
+}
+
+function sl_add_custom_extracted_text($raw_text, $source_locale) {
+    global $wpdb;
+    $table_name = $wpdb->prefix . 'extracted_texts';
+
+    $clean_text = sanitize_textarea_field($raw_text);
+    $clean_text = trim($clean_text);
+
+    if (empty($clean_text) || preg_match('/^[\W\d]+$/', $clean_text)) {
+        return ['status' => 'invalid'];
+    }
+
+    if (sl_is_text_only_shortcodes($clean_text)) {
+        return ['status' => 'invalid'];
+    }
+
+    $existing_text = $wpdb->get_var($wpdb->prepare(
+        "SELECT id FROM $table_name WHERE BINARY original_text = %s",
+        $clean_text
+    ));
+
+    if ($existing_text) {
+        return ['status' => 'exists'];
+    }
+
+    if (empty($source_locale)) {
+        $source_locale = get_locale();
+    }
+
+    $inserted = $wpdb->insert(
+        $table_name,
+        [
+            'original_text' => $clean_text,
+            'source_language' => $source_locale,
+        ]
+    );
+
+    if (!$inserted) {
+        return ['status' => 'error'];
+    }
+
+    return ['status' => 'added'];
 }
 
 // Function to clear the extracted texts and translations from the database
