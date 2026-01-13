@@ -26,7 +26,14 @@ function sl_switch_language() {
     $available_languages[] = 'en_US'; // Include English as it's always available
 
     $browser_lang = substr($_SERVER['HTTP_ACCEPT_LANGUAGE'], 0, 2);
-    $language_map = ['en' => 'en_US', 'tr' => 'tr_TR'];
+    $language_map = [
+        'en' => 'en_US',
+        'tr' => 'tr_TR',
+        'de' => 'de_DE',
+        'fr' => 'fr_FR',
+        'es' => 'es_ES',
+        'ja' => 'ja',
+    ];
     $wp_lang = isset($language_map[$browser_lang]) ? $language_map[$browser_lang] : '';
 
     if ($wp_lang && in_array($wp_lang, $available_languages)) {
@@ -156,6 +163,161 @@ function sl_start_language_switch_buffer() {
 }
 add_action('template_redirect', 'sl_start_language_switch_buffer');
 
+// Shortcode helpers to avoid translating or breaking them.
+function sl_get_shortcode_regex_pattern() {
+    if (function_exists('get_shortcode_regex')) {
+        global $shortcode_tags;
+        if (!empty($shortcode_tags)) {
+            $shortcode_regex = get_shortcode_regex();
+            if (!empty($shortcode_regex)) {
+                return '~' . $shortcode_regex . '~s';
+            }
+        }
+    }
+
+    return '/\\[[a-zA-Z][\\w-]*(?:\\s[^\\]]*)?\\]/';
+}
+
+function sl_extract_shortcodes($text) {
+    $pattern = sl_get_shortcode_regex_pattern();
+    if (strpos($text, '[') === false || !preg_match($pattern, $text)) {
+        return [];
+    }
+
+    preg_match_all($pattern, $text, $matches);
+    return $matches[0] ?? [];
+}
+
+function sl_is_text_only_shortcodes($text) {
+    $pattern = sl_get_shortcode_regex_pattern();
+    if (!preg_match($pattern, $text)) {
+        return false;
+    }
+
+    $without_shortcodes = preg_replace($pattern, '', $text);
+    return trim($without_shortcodes) === '';
+}
+
+function sl_mask_shortcodes($text, &$shortcode_map, &$shortcode_reverse_map = null) {
+    $shortcode_map = [];
+    if ($shortcode_reverse_map !== null) {
+        $shortcode_reverse_map = [];
+    }
+
+    $pattern = sl_get_shortcode_regex_pattern();
+    if (strpos($text, '[') === false || !preg_match($pattern, $text)) {
+        return $text;
+    }
+
+    $prefix = '__SL_SC_' . substr(md5($text . microtime()), 0, 8) . '_';
+    $index = 0;
+
+    return preg_replace_callback($pattern, function($matches) use (&$shortcode_map, &$shortcode_reverse_map, &$index, $prefix) {
+        $shortcode = $matches[0];
+        if (is_array($shortcode_reverse_map) && isset($shortcode_reverse_map[$shortcode])) {
+            return $shortcode_reverse_map[$shortcode];
+        }
+
+        $placeholder = $prefix . $index . '__';
+        $shortcode_map[$placeholder] = $shortcode;
+        if ($shortcode_reverse_map !== null) {
+            $shortcode_reverse_map[$shortcode] = $placeholder;
+        }
+        $index++;
+
+        return $placeholder;
+    }, $text);
+}
+
+function sl_restore_shortcodes($text, $shortcode_map) {
+    if (empty($shortcode_map)) {
+        return $text;
+    }
+
+    return strtr($text, $shortcode_map);
+}
+
+function sl_translation_preserves_shortcodes($original_text, $translated_text) {
+    $shortcodes = sl_extract_shortcodes($original_text);
+    if (empty($shortcodes)) {
+        return true;
+    }
+
+    $shortcode_counts = array_count_values($shortcodes);
+    foreach ($shortcode_counts as $shortcode => $count) {
+        if (substr_count($translated_text, $shortcode) < $count) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+function sl_get_available_language_options() {
+    $languages = sl_deepl_get_language_codes('target');
+    if (!is_array($languages) || empty($languages)) {
+        return [
+            'TR' => 'Turkish',
+            'EN' => 'English',
+            'DE' => 'German',
+            'FR' => 'French',
+            'ES' => 'Spanish',
+        ];
+    }
+
+    return $languages;
+}
+
+function sl_get_available_source_language_options() {
+    $languages = sl_deepl_get_language_codes('source');
+    if (!is_array($languages) || empty($languages)) {
+        return [
+            'EN' => 'English',
+            'DE' => 'German',
+            'FR' => 'French',
+            'ES' => 'Spanish',
+            'TR' => 'Turkish',
+        ];
+    }
+
+    return $languages;
+}
+
+function sl_normalize_target_languages($target_languages, $available_languages) {
+    if (!is_array($target_languages)) {
+        $target_languages = array_filter(array_map('trim', explode(',', (string) $target_languages)));
+    }
+
+    $available_codes = array_keys($available_languages);
+    $target_languages = array_values(array_unique(array_intersect($target_languages, $available_codes)));
+
+    return $target_languages;
+}
+
+function sl_normalize_source_language($source_lang, $available_languages) {
+    $source_lang = trim((string) $source_lang);
+    if ($source_lang === '') {
+        return '';
+    }
+
+    $available_map = [];
+    foreach (array_keys($available_languages) as $code) {
+        $available_map[strtoupper($code)] = $code;
+    }
+
+    $upper_source = strtoupper($source_lang);
+    if (isset($available_map[$upper_source])) {
+        return $available_map[$upper_source];
+    }
+
+    $base_code = strtoupper(strtok($source_lang, '-'));
+    if (isset($available_map[$base_code])) {
+        return $available_map[$base_code];
+    }
+
+    return '';
+}
+
 // Function to process the buffer and replace text with translations, allowing for partial language matches (e.g., 'en' matches 'en_US' or 'en_GB')
 function sl_process_translations_in_buffer($content) {
     global $wpdb;
@@ -179,8 +341,16 @@ function sl_process_translations_in_buffer($content) {
         return strlen($b->original_text) - strlen($a->original_text);
     });
 
+    $shortcode_map = [];
+    $shortcode_reverse_map = [];
+    $content = sl_mask_shortcodes($content, $shortcode_map, $shortcode_reverse_map);
+
     // Replace each original text with its translation, if available
     foreach ($extracted_texts as $text) {
+        if (sl_is_text_only_shortcodes($text->original_text)) {
+            continue;
+        }
+
         // Query for translations where the first two characters of the target language match the browser language
         $translated_text = $wpdb->get_var($wpdb->prepare(
             "SELECT translated_text FROM $translation_table_name WHERE extracted_text_id = %d AND LOWER(SUBSTRING(target_language, 1, 2)) = %s",
@@ -198,12 +368,23 @@ function sl_process_translations_in_buffer($content) {
 
         // If a translation is found, replace the original text in the page content
         if (!empty($translated_text)) {
-            $content = str_replace($text->original_text, $translated_text, $content);
+            if (!sl_translation_preserves_shortcodes($text->original_text, $translated_text)) {
+                continue;
+            }
+
+            $search_text = $text->original_text;
+            $replacement_text = $translated_text;
+            if (!empty($shortcode_reverse_map)) {
+                $search_text = strtr($search_text, $shortcode_reverse_map);
+                $replacement_text = strtr($replacement_text, $shortcode_reverse_map);
+            }
+
+            $content = str_replace($search_text, $replacement_text, $content);
         }
     }
 
     // Return the modified content with translations
-    return $content;
+    return sl_restore_shortcodes($content, $shortcode_map);
 }
 
 // Display extracted texts page with translations
@@ -213,6 +394,26 @@ function sl_display_extracted_texts() {
     $translation_table_name = $wpdb->prefix . 'extracted_text_translations';
 
     $results = $wpdb->get_results("SELECT * FROM $table_name");
+    $available_languages = sl_get_available_language_options();
+    $available_language_codes = array_keys($available_languages);
+    $available_source_languages = sl_get_available_source_language_options();
+    $available_source_codes = array_keys($available_source_languages);
+    $stored_source_lang = get_option('sl_last_source_lang', '');
+    $last_source_lang = sl_normalize_source_language($stored_source_lang, $available_source_languages);
+    if (empty($last_source_lang) && !empty($available_source_codes)) {
+        $last_source_lang = $available_source_codes[0];
+    }
+    if (!empty($last_source_lang) && $stored_source_lang !== $last_source_lang) {
+        update_option('sl_last_source_lang', $last_source_lang);
+    }
+    $selected_target_langs = sl_normalize_target_languages(get_option('sl_last_target_langs', []), $available_languages);
+    if (empty($selected_target_langs)) {
+        $legacy_target_lang = get_option('sl_last_target_lang', '');
+        if (!empty($legacy_target_lang)) {
+            $selected_target_langs = sl_normalize_target_languages([$legacy_target_lang], $available_languages);
+        }
+    }
+    $active_target_lang = get_option('sl_last_active_target_lang', '');
 
     // Handle button actions (extract texts, clear database, translate texts)
     if (isset($_POST['extract_texts'])) {
@@ -223,10 +424,54 @@ function sl_display_extracted_texts() {
         sl_clear_extracted_texts();
     }
 
+    if (isset($_POST['save_target_languages'])) {
+        $source_lang = sl_normalize_source_language(sanitize_text_field($_POST['source_lang']), $available_source_languages);
+        if (empty($source_lang) && !empty($available_source_codes)) {
+            $source_lang = $available_source_codes[0];
+        }
+        $target_langs = isset($_POST['target_langs']) ? array_map('sanitize_text_field', (array) $_POST['target_langs']) : [];
+        $target_langs = sl_normalize_target_languages($target_langs, $available_languages);
+        update_option('sl_last_source_lang', $source_lang);
+        update_option('sl_last_target_langs', $target_langs);
+        $last_source_lang = $source_lang;
+        $selected_target_langs = $target_langs;
+        if (count($selected_target_langs) === 1) {
+            update_option('sl_last_active_target_lang', $selected_target_langs[0]);
+            update_option('sl_last_target_lang', $selected_target_langs[0]);
+        }
+    }
+
     if (isset($_POST['translate_texts'])) {
-        $source_lang = sanitize_text_field($_POST['source_lang']);
+        $source_lang = sl_normalize_source_language(sanitize_text_field($_POST['source_lang']), $available_source_languages);
+        if (empty($source_lang) && !empty($available_source_codes)) {
+            $source_lang = $available_source_codes[0];
+        }
         $target_lang = sanitize_text_field($_POST['target_lang']);
-        sl_translate_and_display_texts($source_lang, $target_lang, $results);
+        if (!in_array($target_lang, $available_language_codes, true)) {
+            $target_lang = '';
+        }
+        if (!empty($source_lang)) {
+            update_option('sl_last_source_lang', $source_lang);
+            $last_source_lang = $source_lang;
+        }
+        if (!empty($target_lang)) {
+            update_option('sl_last_active_target_lang', $target_lang);
+            update_option('sl_last_target_lang', $target_lang);
+            $translated_count = sl_translate_and_display_texts($source_lang, $target_lang, $results);
+            $target_label = $available_languages[$target_lang] ?? $target_lang;
+            if ($translated_count > 0) {
+                echo '<div class="updated"><p>Added ' . esc_html($translated_count) . ' new translations for ' . esc_html($target_label) . '.</p></div>';
+            } else {
+                echo '<div class="notice notice-warning"><p>No new translations were added. Check your DeepL API key and source language selection.</p></div>';
+            }
+        }
+    }
+
+    if (!in_array($active_target_lang, $selected_target_langs, true)) {
+        $active_target_lang = $selected_target_langs[0] ?? '';
+        if (!empty($active_target_lang)) {
+            update_option('sl_last_active_target_lang', $active_target_lang);
+        }
     }
 
     // Handle custom translation save
@@ -234,115 +479,184 @@ function sl_display_extracted_texts() {
         sl_save_custom_translation();
     }
 
+    $translations_by_lang = [];
+    if (!empty($selected_target_langs) && !empty($results)) {
+        $placeholders = implode(',', array_fill(0, count($selected_target_langs), '%s'));
+        $query = "SELECT id, extracted_text_id, target_language, translated_text FROM $translation_table_name WHERE target_language IN ($placeholders)";
+        $prepared = call_user_func_array([$wpdb, 'prepare'], array_merge([$query], $selected_target_langs));
+        $translation_rows = $wpdb->get_results($prepared);
+        foreach ($translation_rows as $translation_row) {
+            $translations_by_lang[$translation_row->target_language][$translation_row->extracted_text_id] = $translation_row;
+        }
+    }
+    $source_language_label = $available_source_languages[$last_source_lang] ?? $last_source_lang;
+
     echo '<div class="wrap">';
     echo '<h1>Extracted Texts</h1>';
 
-    // Add buttons to manually extract text, clear database, and translate texts
-    echo '<form method="post">';
+    // Add buttons to manually extract text and clear database
+    echo '<form method="post" class="sl-extract-actions">';
     submit_button('Extract Texts from All Pages', 'primary', 'extract_texts', false);
     submit_button('Clear Database', 'secondary', 'clear_database', false);
+    echo '</form>';
 
     // Translation section with language selection
     echo '<h2>Translate Extracted Texts</h2>';
-    echo '<label for="source_lang">Source Language: </label>';
-    echo '<select name="source_lang" id="source_lang">';
-    $source_languages = sl_deepl_get_language_codes();
-    if ($source_languages) {
-        foreach ($source_languages as $code => $name) {
-            echo "<option value='$code'>$name</option>";
-        }
+    echo '<p>Select one or more target languages to manage translations.</p>';
+    echo '<form method="post" class="sl-language-selection">';
+    echo '<label for="sl-source-lang">Source Language: </label>';
+    echo '<select name="source_lang" id="sl-source-lang">';
+    foreach ($available_source_languages as $code => $name) {
+        echo "<option value='" . esc_attr($code) . "'" . selected($code, $last_source_lang, false) . '>' . esc_html($name) . '</option>';
     }
     echo '</select>';
-
-    echo '<label for="target_lang">Target Language: </label>';
-    echo '<select name="target_lang" id="target_lang">';
-    $target_languages = sl_deepl_get_language_codes();
-    if ($target_languages) {
-        foreach ($target_languages as $code => $name) {
-            echo "<option value='$code'>$name</option>";
-        }
+    echo '<fieldset class="sl-target-language-list">';
+    echo '<legend>Target Languages</legend>';
+    foreach ($available_languages as $code => $name) {
+        $checked = in_array($code, $selected_target_langs, true) ? ' checked' : '';
+        echo '<label><input type="checkbox" name="target_langs[]" value="' . esc_attr($code) . '"' . $checked . '> ' . esc_html($name) . '</label>';
     }
-    echo '</select>';
-
-    submit_button('Translate Texts', 'primary', 'translate_texts');
+    echo '</fieldset>';
+    submit_button('Update Target Languages', 'secondary', 'save_target_languages');
     echo '</form>';
 
-    // Display extracted texts in a table with custom translation inputs
+    // Display extracted texts in tabbed tables per target language
     echo '<h2>Extracted Texts and Custom Translations</h2>';
-    echo '<p>Enter custom translations below. You can add translations for multiple languages per text.</p>';
-    echo '<table class="widefat">';
-    echo '<thead><tr><th>ID</th><th>Original Text</th><th>Source Language</th><th>Target Language</th><th>Translation</th><th>Action</th></tr></thead>';
-    echo '<tbody>';
+    echo '<p class="description">Stored locale reflects the site locale at extraction time and does not change the translation source.</p>';
+    if (empty($selected_target_langs)) {
+        echo '<p>Select target languages above to view translation tabs.</p>';
+    } else {
+        echo '<div class="sl-language-tabs">';
+        echo '<div class="sl-language-tab-nav" role="tablist" aria-label="Target languages">';
+        foreach ($selected_target_langs as $code) {
+            $language_name = $available_languages[$code] ?? $code;
+            $is_active = $code === $active_target_lang;
+            $button_id = 'sl-tab-button-' . $code;
+            $panel_id = 'sl-tab-' . $code;
+            echo '<button type="button" class="sl-language-tab' . ($is_active ? ' is-active' : '') . '" id="' . esc_attr($button_id) . '" role="tab" aria-selected="' . ($is_active ? 'true' : 'false') . '" aria-controls="' . esc_attr($panel_id) . '" data-target="' . esc_attr($panel_id) . '">';
+            echo esc_html($language_name) . ' (' . esc_html($code) . ')';
+            echo '</button>';
+        }
+        echo '</div>';
 
-    if (!empty($results)) {
-        foreach ($results as $row) {
-            // Fetch all translations for this text
-            $translations = $wpdb->get_results($wpdb->prepare(
-                "SELECT * FROM $translation_table_name WHERE extracted_text_id = %d",
-                $row->id
-            ));
+        foreach ($selected_target_langs as $code) {
+            $language_name = $available_languages[$code] ?? $code;
+            $is_active = $code === $active_target_lang;
+            $panel_id = 'sl-tab-' . $code;
+            echo '<div class="sl-language-tab-panel' . ($is_active ? ' is-active' : '') . '" id="' . esc_attr($panel_id) . '" role="tabpanel" aria-labelledby="sl-tab-button-' . esc_attr($code) . '">';
+            echo '<div class="sl-language-tab-header">';
+            echo '<div class="sl-language-tab-title">';
+            echo '<h3>' . esc_html($language_name) . ' (' . esc_html($code) . ')</h3>';
+            if (!empty($source_language_label)) {
+                echo '<span class="sl-source-language">Source: ' . esc_html($source_language_label) . ' (' . esc_html($last_source_lang) . ')</span>';
+            }
+            echo '</div>';
+            echo '<form method="post" class="sl-translate-form">';
+            echo '<input type="hidden" name="source_lang" class="sl-source-lang-input" value="' . esc_attr($last_source_lang) . '">';
+            echo '<input type="hidden" name="target_lang" value="' . esc_attr($code) . '">';
+            echo '<button type="submit" class="button button-primary" name="translate_texts" value="1">Translate Texts</button>';
+            echo '</form>';
+            echo '</div>';
 
-            // Display existing translations
-            if (!empty($translations)) {
-                foreach ($translations as $translation) {
+            echo '<table class="widefat fixed striped">';
+            echo '<thead><tr><th>ID</th><th>Original Text</th><th>Stored Locale</th><th>Translation</th><th>Action</th></tr></thead>';
+            echo '<tbody>';
+
+            if (!empty($results)) {
+                foreach ($results as $row) {
+                    $translation = $translations_by_lang[$code][$row->id] ?? null;
+                    $translated_text = $translation ? $translation->translated_text : '';
+                    $translation_id = $translation ? $translation->id : '';
+                    $button_label = !empty($translation_id) ? 'Update' : 'Save';
+                    $form_id = 'sl-translation-form-' . $code . '-' . $row->id;
                     echo '<tr>';
                     echo '<td>' . esc_html($row->id) . '</td>';
                     echo '<td>' . esc_html($row->original_text) . '</td>';
                     echo '<td>' . esc_html($row->source_language) . '</td>';
-                    echo '<td>' . esc_html($translation->target_language) . '</td>';
                     echo '<td>';
-                    echo '<form method="post" style="margin:0;">';
-                    echo '<input type="hidden" name="extracted_text_id" value="' . esc_attr($row->id) . '">';
-                    echo '<input type="hidden" name="translation_id" value="' . esc_attr($translation->id) . '">';
-                    echo '<input type="hidden" name="target_language" value="' . esc_attr($translation->target_language) . '">';
-                    echo '<input type="text" name="translated_text" value="' . esc_attr($translation->translated_text) . '" size="50">';
+                    echo '<input type="text" name="translated_text" form="' . esc_attr($form_id) . '" value="' . esc_attr($translated_text) . '" size="50">';
                     echo '</td>';
                     echo '<td>';
-                    submit_button('Update', 'small', 'save_custom_translation', false);
+                    echo '<form method="post" id="' . esc_attr($form_id) . '" style="margin:0;">';
+                    echo '<input type="hidden" name="extracted_text_id" value="' . esc_attr($row->id) . '">';
+                    echo '<input type="hidden" name="target_language" value="' . esc_attr($code) . '">';
+                    if (!empty($translation_id)) {
+                        echo '<input type="hidden" name="translation_id" value="' . esc_attr($translation_id) . '">';
+                    }
+                    submit_button($button_label, 'small', 'save_custom_translation', false);
                     echo '</form>';
                     echo '</td>';
                     echo '</tr>';
                 }
+            } else {
+                echo '<tr><td colspan="5">No extracted texts found. Click "Extract Texts from All Pages" to get started.</td></tr>';
             }
 
-            // Add a row for adding a new translation
-            echo '<tr style="background-color: #f9f9f9;">';
-            echo '<td>' . esc_html($row->id) . '</td>';
-            echo '<td>' . esc_html($row->original_text) . '</td>';
-            echo '<td>' . esc_html($row->source_language) . '</td>';
-            echo '<td>';
-            echo '<form method="post" style="margin:0;">';
-            echo '<input type="hidden" name="extracted_text_id" value="' . esc_attr($row->id) . '">';
-            echo '<select name="target_language">';
-            $available_languages = sl_deepl_get_language_codes();
-            if ($available_languages) {
-                foreach ($available_languages as $code => $name) {
-                    echo "<option value='$code'>$name</option>";
-                }
-            } else {
-                // Fallback if DeepL API is not available
-                echo '<option value="TR">Turkish</option>';
-                echo '<option value="EN">English</option>';
-                echo '<option value="DE">German</option>';
-                echo '<option value="FR">French</option>';
-                echo '<option value="ES">Spanish</option>';
-            }
-            echo '</select>';
-            echo '</td>';
-            echo '<td>';
-            echo '<input type="text" name="translated_text" placeholder="Enter custom translation" size="50">';
-            echo '</td>';
-            echo '<td>';
-            submit_button('Add New', 'small', 'save_custom_translation', false);
-            echo '</form>';
-            echo '</td>';
-            echo '</tr>';
+            echo '</tbody></table>';
+            echo '</div>';
         }
-    } else {
-        echo '<tr><td colspan="6">No extracted texts found. Click "Extract Texts from All Pages" to get started.</td></tr>';
+
+        echo '</div>';
+
+        echo '<style>
+            .sl-language-selection { margin-bottom: 12px; }
+            .sl-target-language-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 6px 12px; margin: 10px 0 12px; padding: 8px 10px; border: 1px solid #dcdcde; background: #fff; }
+            .sl-target-language-list legend { font-weight: 600; padding: 0 4px; }
+            .sl-target-language-list label { display: flex; align-items: center; gap: 6px; }
+            .sl-language-tabs { margin-top: 12px; }
+            .sl-language-tab-nav { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+            .sl-language-tab { border: 1px solid #ccd0d4; background: #f0f0f1; padding: 6px 10px; cursor: pointer; }
+            .sl-language-tab.is-active { background: #fff; border-bottom-color: #fff; }
+            .sl-language-tab-panel { display: none; border: 1px solid #ccd0d4; background: #fff; padding: 12px; }
+            .sl-language-tab-panel.is-active { display: block; }
+            .sl-language-tab-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+            .sl-language-tab-title { display: flex; flex-direction: column; gap: 4px; }
+            .sl-language-tab-header h3 { margin: 0; }
+            .sl-source-language { color: #646970; font-size: 12px; }
+            .sl-language-tab-panel table th:nth-child(1),
+            .sl-language-tab-panel table td:nth-child(1) { width: 60px; }
+            .sl-language-tab-panel table th:nth-child(5),
+            .sl-language-tab-panel table td:nth-child(5) { width: 110px; }
+            .sl-language-tab-panel table td input[type="text"] { width: 100%; max-width: 100%; box-sizing: border-box; }
+        </style>';
+
+        echo '<script>
+            document.addEventListener("DOMContentLoaded", function() {
+                var tabs = document.querySelectorAll(".sl-language-tab");
+                var panels = document.querySelectorAll(".sl-language-tab-panel");
+                tabs.forEach(function(tab) {
+                    tab.addEventListener("click", function() {
+                        var targetId = tab.getAttribute("data-target");
+                        tabs.forEach(function(other) {
+                            other.classList.remove("is-active");
+                            other.setAttribute("aria-selected", "false");
+                        });
+                        panels.forEach(function(panel) {
+                            panel.classList.remove("is-active");
+                        });
+                        tab.classList.add("is-active");
+                        tab.setAttribute("aria-selected", "true");
+                        var panel = document.getElementById(targetId);
+                        if (panel) {
+                            panel.classList.add("is-active");
+                        }
+                    });
+                });
+
+                var sourceSelect = document.getElementById("sl-source-lang");
+                if (sourceSelect) {
+                    var updateSource = function() {
+                        document.querySelectorAll(".sl-source-lang-input").forEach(function(input) {
+                            input.value = sourceSelect.value;
+                        });
+                    };
+                    sourceSelect.addEventListener("change", updateSource);
+                    updateSource();
+                }
+            });
+        </script>';
     }
 
-    echo '</tbody></table>';
     echo '</div>';
 }
 
@@ -408,8 +722,8 @@ function sl_save_custom_translation() {
 // Function to clear the extracted texts and translations from the database
 function sl_clear_extracted_texts() {
     global $wpdb;
-    $wpdb->query("TRUNCATE TABLE {$wpdb->prefix}extracted_texts");
-    $wpdb->query("TRUNCATE TABLE {$wpdb->prefix}extracted_text_translations");
+    $wpdb->query("DELETE FROM {$wpdb->prefix}extracted_text_translations");
+    $wpdb->query("DELETE FROM {$wpdb->prefix}extracted_texts");
 
     echo '<div class="updated"><p>The database has been cleared.</p></div>';
 }
@@ -419,6 +733,7 @@ function sl_translate_and_display_texts($source_lang, $target_lang, $results) {
     global $wpdb;
     $table_name = $wpdb->prefix . 'extracted_texts';
     $translation_table_name = $wpdb->prefix . 'extracted_text_translations';
+    $translated_count = 0;
 
     foreach ($results as $row) {
         // Check if this text already has a translation in the target language
@@ -433,12 +748,23 @@ function sl_translate_and_display_texts($source_lang, $target_lang, $results) {
             continue;
         }
 
+        if (sl_is_text_only_shortcodes($row->original_text)) {
+            continue;
+        }
+
         // Translate the text using DeepL
-        $translated_text = sl_deepl_translate_text($row->original_text, $target_lang, $source_lang);
+        $shortcode_map = [];
+        $masked_text = sl_mask_shortcodes($row->original_text, $shortcode_map);
+        $translated_text = sl_deepl_translate_text($masked_text, $target_lang, $source_lang);
 
         if (!is_wp_error($translated_text) && !empty($translated_text)) {
+            $translated_text = sl_restore_shortcodes($translated_text, $shortcode_map);
+            if (!sl_translation_preserves_shortcodes($row->original_text, $translated_text)) {
+                continue;
+            }
+
             // Insert the new translation into the database
-            $wpdb->insert(
+            $inserted = $wpdb->insert(
                 $translation_table_name,
                 [
                     'extracted_text_id' => $row->id,
@@ -446,10 +772,12 @@ function sl_translate_and_display_texts($source_lang, $target_lang, $results) {
                     'target_language'   => $target_lang,
                 ]
             );
+            if ($inserted) {
+                $translated_count++;
+            }
         }
     }
-
-    echo '<div class="updated"><p>All texts have been translated and displayed below.</p></div>';
+    return $translated_count;
 }
 
 // Function to extract text from all published pages, posts, WooCommerce products, and navigation menus
@@ -496,6 +824,10 @@ function sl_extract_text_from_all_pages() {
 
                     // Skip empty strings and texts that are only numbers/punctuation/symbols
                     if (empty($extracted_text) || preg_match('/^[\W\d]+$/', $extracted_text)) {
+                        continue;
+                    }
+
+                    if (sl_is_text_only_shortcodes($extracted_text)) {
                         continue;
                     }
 
@@ -546,6 +878,10 @@ function sl_extract_text_from_all_pages() {
                         continue;
                     }
 
+                    if (sl_is_text_only_shortcodes($extracted_text)) {
+                        continue;
+                    }
+
                     // Check if this text already exists in the database to avoid duplicates
                     $existing_text = $wpdb->get_var($wpdb->prepare(
                         "SELECT id FROM $table_name WHERE original_text = %s",
@@ -588,6 +924,10 @@ function sl_extract_text_from_menus($table_name) {
 
                 // Skip empty strings and texts that are only numbers/punctuation/symbols
                 if (empty($menu_text) || preg_match('/^[\W\d]+$/', $menu_text)) {
+                    continue;
+                }
+
+                if (sl_is_text_only_shortcodes($menu_text)) {
                     continue;
                 }
 

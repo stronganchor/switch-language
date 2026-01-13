@@ -51,7 +51,7 @@ function sl_deepl_translate_text($text, $translate_to_lang, $translate_from_lang
 
 // Get the translation languages from the DeepL API
 function sl_deepl_get_language_names($no_parentheses = false, $type = 'target') {
-    $json = sl_deepl_get_language_json();
+    $json = sl_deepl_get_language_json($type);
 
     // Remove parentheses and duplicate entries if no_parentheses is true
     if ($no_parentheses) {
@@ -68,8 +68,8 @@ function sl_deepl_get_language_names($no_parentheses = false, $type = 'target') 
 }
 
 // Get an array with keys as language codes and values as language names
-function sl_deepl_get_language_codes() {
-    $json = sl_deepl_get_language_json();
+function sl_deepl_get_language_codes($type = 'target') {
+    $json = sl_deepl_get_language_json($type);
     if ($json === null) {
         return null;
     }
