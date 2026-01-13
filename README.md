@@ -24,6 +24,7 @@ Switch Language is a WordPress plugin that detects the visitor's browser languag
 - Pick a source language and target languages, then click **Update Target Languages**.
 - Use the per-language tab **Translate Texts** button to translate for a single target.
 - Edit any translation inline and click **Save/Update**.
+- Add the shortcode `[sl_language_switcher]` to render a manual language switcher.
 
 ## Notes
 

@@ -16,14 +16,202 @@ if (!defined('ABSPATH')) {
 // Include DeepL translation file
 require_once plugin_dir_path(__FILE__) . 'includes/deepl-translation.php';
 
-// Switch the site language based on the user's browser language
-function sl_switch_language() {
-    if (is_admin() || !isset($_SERVER['HTTP_ACCEPT_LANGUAGE'])) {
+function sl_get_available_locales() {
+    $locales = get_available_languages();
+    $locales[] = 'en_US';
+    $locales = array_values(array_unique($locales));
+    sort($locales, SORT_STRING);
+    return $locales;
+}
+
+function sl_get_locale_label($locale) {
+    if (function_exists('locale_get_display_name')) {
+        $label = locale_get_display_name($locale, $locale);
+        if (!empty($label)) {
+            return $label;
+        }
+    }
+
+    return $locale;
+}
+
+function sl_set_manual_locale_cookie($locale) {
+    $cookie_name = 'sl_manual_locale';
+    $secure = is_ssl();
+    $http_only = true;
+
+    if (empty($locale)) {
+        setcookie($cookie_name, '', time() - HOUR_IN_SECONDS, COOKIEPATH, COOKIE_DOMAIN, $secure, $http_only);
+        unset($_COOKIE[$cookie_name]);
         return;
     }
 
-    $available_languages = get_available_languages();
-    $available_languages[] = 'en_US'; // Include English as it's always available
+    setcookie($cookie_name, $locale, time() + YEAR_IN_SECONDS, COOKIEPATH, COOKIE_DOMAIN, $secure, $http_only);
+    $_COOKIE[$cookie_name] = $locale;
+}
+
+function sl_get_manual_locale() {
+    if (empty($_COOKIE['sl_manual_locale'])) {
+        return '';
+    }
+
+    $locale = sanitize_text_field(wp_unslash($_COOKIE['sl_manual_locale']));
+    if ($locale === '') {
+        return '';
+    }
+
+    $available_locales = sl_get_available_locales();
+    return in_array($locale, $available_locales, true) ? $locale : '';
+}
+
+function sl_apply_locale($locale) {
+    if (empty($locale)) {
+        return;
+    }
+
+    switch_to_locale($locale);
+    add_filter('locale', function() use ($locale) {
+        return $locale;
+    });
+}
+
+function sl_get_preferred_language_code() {
+    $manual_locale = sl_get_manual_locale();
+    $locale = $manual_locale ?: get_locale();
+    if (!empty($locale)) {
+        $normalized = str_replace('-', '_', $locale);
+        $base = strtok($normalized, '_');
+        if (!empty($base)) {
+            return strtolower($base);
+        }
+    }
+
+    if (isset($_SERVER['HTTP_ACCEPT_LANGUAGE'])) {
+        return strtolower(substr($_SERVER['HTTP_ACCEPT_LANGUAGE'], 0, 2));
+    }
+
+    return '';
+}
+
+function sl_handle_language_switcher_request() {
+    if (is_admin() || empty($_POST['sl_language_switcher'])) {
+        return;
+    }
+
+    if (empty($_POST['sl_language_switcher_nonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['sl_language_switcher_nonce'])), 'sl_language_switcher')) {
+        return;
+    }
+
+    $requested_locale = '';
+    if (isset($_POST['sl_locale'])) {
+        $requested_locale = sanitize_text_field(wp_unslash($_POST['sl_locale']));
+    }
+
+    if ($requested_locale === 'auto' || $requested_locale === '') {
+        sl_set_manual_locale_cookie('');
+    } else {
+        $available_locales = sl_get_available_locales();
+        if (in_array($requested_locale, $available_locales, true)) {
+            sl_set_manual_locale_cookie($requested_locale);
+        }
+    }
+
+    $redirect = '';
+    if (!empty($_POST['sl_redirect'])) {
+        $redirect = esc_url_raw(wp_unslash($_POST['sl_redirect']));
+    }
+    if (empty($redirect)) {
+        $redirect = wp_get_referer();
+    }
+    if (empty($redirect)) {
+        $redirect = home_url('/');
+    }
+
+    wp_safe_redirect($redirect);
+    exit;
+}
+add_action('init', 'sl_handle_language_switcher_request');
+
+function sl_language_switcher_shortcode($atts) {
+    $atts = shortcode_atts([
+        'separator' => ' | ',
+    ], $atts, 'sl_language_switcher');
+
+    $available_locales = sl_get_available_locales();
+    $locale_map = [];
+    foreach ($available_locales as $locale) {
+        $normalized = str_replace('-', '_', $locale);
+        $code = strtoupper(strtok($normalized, '_'));
+        if ($code === '') {
+            continue;
+        }
+        if (!isset($locale_map[$code])) {
+            $locale_map[$code] = $locale;
+        }
+    }
+
+    if (empty($locale_map)) {
+        return '';
+    }
+
+    $current_locale = sl_get_manual_locale();
+    if (empty($current_locale)) {
+        $current_locale = get_locale();
+    }
+    $current_code = '';
+    if (!empty($current_locale)) {
+        $normalized = str_replace('-', '_', $current_locale);
+        $current_code = strtoupper(strtok($normalized, '_'));
+    }
+    if ($current_code === '' || !isset($locale_map[$current_code])) {
+        reset($locale_map);
+        $current_code = key($locale_map);
+    }
+
+    $request_uri = isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '';
+    $action_url_raw = $request_uri !== '' ? esc_url_raw($request_uri) : esc_url_raw(home_url('/'));
+    $action_url = esc_url($action_url_raw);
+    $button_style = 'background:none;border:0;padding:0;margin:0;font:inherit;color:inherit;cursor:pointer;';
+
+    $output = '<form method="post" class="sl-language-switcher" action="' . $action_url . '" style="display:inline;">';
+    $output .= '<input type="hidden" name="sl_language_switcher" value="1">';
+    $output .= '<input type="hidden" name="sl_redirect" value="' . esc_attr($action_url_raw) . '">';
+    $output .= wp_nonce_field('sl_language_switcher', 'sl_language_switcher_nonce', true, false);
+
+    $codes = array_keys($locale_map);
+    $count = count($codes);
+    foreach ($codes as $index => $code) {
+        $locale = $locale_map[$code];
+        $is_active = $code === $current_code;
+        $label = $is_active ? '<strong>' . esc_html($code) . '</strong>' : esc_html($code);
+        $output .= '<button type="submit" name="sl_locale" value="' . esc_attr($locale) . '" style="' . esc_attr($button_style) . '" class="sl-language-switcher__link"' . ($is_active ? ' aria-current="true"' : '') . '>' . $label . '</button>';
+        if ($index < $count - 1) {
+            $output .= '<span class="sl-language-switcher__separator">' . esc_html($atts['separator']) . '</span>';
+        }
+    }
+
+    $output .= '</form>';
+
+    return $output;
+}
+add_shortcode('sl_language_switcher', 'sl_language_switcher_shortcode');
+
+// Switch the site language based on the user's browser language
+function sl_switch_language() {
+    if (is_admin()) {
+        return;
+    }
+
+    $available_languages = sl_get_available_locales();
+    $manual_locale = sl_get_manual_locale();
+    if (!empty($manual_locale) && in_array($manual_locale, $available_languages, true)) {
+        sl_apply_locale($manual_locale);
+        return;
+    }
+
+    if (!isset($_SERVER['HTTP_ACCEPT_LANGUAGE'])) {
+        return;
+    }
 
     $browser_lang = substr($_SERVER['HTTP_ACCEPT_LANGUAGE'], 0, 2);
     $language_map = [
@@ -37,12 +225,7 @@ function sl_switch_language() {
     $wp_lang = isset($language_map[$browser_lang]) ? $language_map[$browser_lang] : '';
 
     if ($wp_lang && in_array($wp_lang, $available_languages)) {
-        switch_to_locale($wp_lang);
-
-        // Also set the locale for the session
-        add_filter('locale', function($locale) use ($wp_lang) {
-            return $wp_lang;
-        });
+        sl_apply_locale($wp_lang);
     }
 }
 add_action('plugins_loaded', 'sl_switch_language', 1);
@@ -322,12 +505,15 @@ function sl_normalize_source_language($source_lang, $available_languages) {
 function sl_process_translations_in_buffer($content) {
     global $wpdb;
 
-    // Get user's browser language (2-letter code)
-    $browser_lang = substr($_SERVER['HTTP_ACCEPT_LANGUAGE'], 0, 2);
+    // Get preferred language (2-letter code) based on manual selection or locale
+    $preferred_lang = sl_get_preferred_language_code();
+    if (empty($preferred_lang)) {
+        return $content;
+    }
 
-    // Log the detected browser language
+    // Log the detected preferred language
     if (defined('WP_DEBUG') && WP_DEBUG) {
-        error_log("Detected browser language: " . $browser_lang);
+        error_log("Detected preferred language: " . $preferred_lang);
     }
 
     // Get all extracted texts from the database
@@ -354,15 +540,15 @@ function sl_process_translations_in_buffer($content) {
         // Query for translations where the first two characters of the target language match the browser language
         $translated_text = $wpdb->get_var($wpdb->prepare(
             "SELECT translated_text FROM $translation_table_name WHERE extracted_text_id = %d AND LOWER(SUBSTRING(target_language, 1, 2)) = %s",
-            $text->id, strtolower($browser_lang)
+            $text->id, strtolower($preferred_lang)
         ));
 
         // Log whether a translation was found and the matched language
         if (defined('WP_DEBUG') && WP_DEBUG) {
             if (!empty($translated_text)) {
-                error_log("Translation found for text ID " . $text->id . " for browser language " . $browser_lang);
+                error_log("Translation found for text ID " . $text->id . " for preferred language " . $preferred_lang);
             } else {
-                error_log("No translation found for text ID " . $text->id . " for browser language " . $browser_lang);
+                error_log("No translation found for text ID " . $text->id . " for preferred language " . $preferred_lang);
             }
         }
 
@@ -785,8 +971,9 @@ function sl_extract_text_from_all_pages() {
     global $wpdb;
     $table_name = $wpdb->prefix . 'extracted_texts';
 
-    // First, extract text from navigation menus
+    // First, extract text from navigation menus and blocks
     sl_extract_text_from_menus($table_name);
+    sl_extract_text_from_navigation_blocks($table_name);
 
     // Query all published pages, posts, and WooCommerce products
     $args = [
@@ -948,6 +1135,97 @@ function sl_extract_text_from_menus($table_name) {
                     );
                 }
             }
+        }
+    }
+}
+
+function sl_extract_text_from_navigation_blocks($table_name) {
+    global $wpdb;
+
+    if (!function_exists('parse_blocks')) {
+        return;
+    }
+
+    $nav_posts = get_posts([
+        'post_type' => 'wp_navigation',
+        'post_status' => 'publish',
+        'posts_per_page' => -1,
+    ]);
+
+    if (empty($nav_posts)) {
+        return;
+    }
+
+    foreach ($nav_posts as $nav_post) {
+        $blocks = parse_blocks($nav_post->post_content);
+        $labels = [];
+        sl_collect_navigation_block_labels($blocks, $labels);
+
+        foreach ($labels as $label) {
+            $label = trim(strip_tags($label));
+
+            if (empty($label) || preg_match('/^[\W\d]+$/', $label)) {
+                continue;
+            }
+
+            if (sl_is_text_only_shortcodes($label)) {
+                continue;
+            }
+
+            $existing_text = $wpdb->get_var($wpdb->prepare(
+                "SELECT id FROM $table_name WHERE BINARY original_text = %s",
+                $label
+            ));
+
+            if (!$existing_text) {
+                $wpdb->insert(
+                    $table_name,
+                    [
+                        'original_text' => $label,
+                        'source_language' => get_locale(),
+                    ]
+                );
+            }
+        }
+    }
+}
+
+function sl_collect_navigation_block_labels($blocks, &$labels) {
+    if (empty($blocks) || !is_array($blocks)) {
+        return;
+    }
+
+    foreach ($blocks as $block) {
+        if (!is_array($block)) {
+            continue;
+        }
+
+        $block_name = $block['blockName'] ?? '';
+        if ($block_name === 'core/navigation-link' || $block_name === 'core/navigation-submenu') {
+            $attrs = $block['attrs'] ?? [];
+            $label = '';
+            if (!empty($attrs['label'])) {
+                $label = $attrs['label'];
+            } elseif (!empty($attrs['title'])) {
+                $label = $attrs['title'];
+            } elseif (!empty($attrs['id']) && is_numeric($attrs['id'])) {
+                $label = get_the_title((int) $attrs['id']);
+            }
+
+            if (empty($label)) {
+                $inner_html = $block['innerHTML'] ?? '';
+                if (!empty($inner_html)) {
+                    $label = trim(strip_tags($inner_html));
+                }
+            }
+
+            if (!empty($label)) {
+                $labels[] = $label;
+            }
+        }
+
+        if (!empty($block['innerBlocks'])) {
+            sl_collect_navigation_block_labels($block['innerBlocks'], $labels);
         }
     }
 }
