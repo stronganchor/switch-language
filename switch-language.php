@@ -504,6 +504,56 @@ function sl_normalize_source_language($source_lang, $available_languages) {
     return '';
 }
 
+// Split HTML into tokens and flag text segments safe for replacement (skip tags and script/style blocks).
+function sl_split_html_for_translation($content) {
+    if (function_exists('wp_html_split')) {
+        $tokens = wp_html_split($content);
+    } else {
+        $tokens = preg_split('/(<[^>]+>)/', $content, -1, PREG_SPLIT_DELIM_CAPTURE);
+    }
+
+    if (!is_array($tokens) || empty($tokens)) {
+        return [[$content], [true]];
+    }
+
+    $replaceable = [];
+    $skip = false;
+    foreach ($tokens as $token) {
+        if ($token === '') {
+            $replaceable[] = !$skip;
+            continue;
+        }
+
+        if ($token[0] === '<') {
+            if (preg_match('/^<\s*(script|style)\b/i', $token)) {
+                $skip = true;
+            } elseif (preg_match('/^<\s*\/\s*(script|style)\b/i', $token)) {
+                $skip = false;
+            }
+            $replaceable[] = false;
+            continue;
+        }
+
+        $replaceable[] = !$skip;
+    }
+
+    return [$tokens, $replaceable];
+}
+
+function sl_replace_text_in_tokens(array $tokens, array $replaceable, $search_text, $replacement_text) {
+    if ($search_text === '' || $search_text === $replacement_text) {
+        return $tokens;
+    }
+
+    foreach ($tokens as $index => $token) {
+        if (!empty($replaceable[$index])) {
+            $tokens[$index] = str_replace($search_text, $replacement_text, $token);
+        }
+    }
+
+    return $tokens;
+}
+
 // Function to process the buffer and replace text with translations, allowing for partial language matches (e.g., 'en' matches 'en_US' or 'en_GB')
 function sl_process_translations_in_buffer($content) {
     global $wpdb;
@@ -533,6 +583,7 @@ function sl_process_translations_in_buffer($content) {
     $shortcode_map = [];
     $shortcode_reverse_map = [];
     $content = sl_mask_shortcodes($content, $shortcode_map, $shortcode_reverse_map);
+    list($content_tokens, $replaceable_tokens) = sl_split_html_for_translation($content);
 
     // Replace each original text with its translation, if available
     foreach ($extracted_texts as $text) {
@@ -568,11 +619,12 @@ function sl_process_translations_in_buffer($content) {
                 $replacement_text = strtr($replacement_text, $shortcode_reverse_map);
             }
 
-            $content = str_replace($search_text, $replacement_text, $content);
+            $content_tokens = sl_replace_text_in_tokens($content_tokens, $replaceable_tokens, $search_text, $replacement_text);
         }
     }
 
     // Return the modified content with translations
+    $content = implode('', $content_tokens);
     return sl_restore_shortcodes($content, $shortcode_map);
 }
 
@@ -803,13 +855,15 @@ function sl_display_extracted_texts() {
                     echo '<input type="text" name="translated_text" form="' . esc_attr($form_id) . '" value="' . esc_attr($translated_text) . '" size="50">';
                     echo '</td>';
                     echo '<td>';
-                    echo '<form method="post" id="' . esc_attr($form_id) . '" style="margin:0;">';
+                    echo '<form method="post" id="' . esc_attr($form_id) . '" class="sl-translation-form" style="margin:0;">';
                     echo '<input type="hidden" name="extracted_text_id" value="' . esc_attr($row->id) . '">';
                     echo '<input type="hidden" name="target_language" value="' . esc_attr($code) . '">';
                     if (!empty($translation_id)) {
                         echo '<input type="hidden" name="translation_id" value="' . esc_attr($translation_id) . '">';
                     }
+                    echo wp_nonce_field('sl_save_custom_translation', 'sl_save_custom_translation_nonce', true, false);
                     submit_button($button_label, 'small', 'save_custom_translation', false);
+                    echo '<span class="sl-translation-status" aria-live="polite"></span>';
                     echo '</form>';
                     echo '</td>';
                     echo '</tr>';
@@ -844,6 +898,11 @@ function sl_display_extracted_texts() {
             .sl-language-tab-panel table th:nth-child(5),
             .sl-language-tab-panel table td:nth-child(5) { width: 110px; }
             .sl-language-tab-panel table td input[type="text"] { width: 100%; max-width: 100%; box-sizing: border-box; }
+            .sl-translation-status { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; font-size: 12px; color: #1d2327; }
+            .sl-translation-status.is-saving { color: #646970; }
+            .sl-translation-status.is-success { color: #0a7a2f; }
+            .sl-translation-status.is-success::before { content: "\2713"; }
+            .sl-translation-status.is-error { color: #b32d2e; }
         </style>';
 
         echo '<script>
@@ -879,6 +938,83 @@ function sl_display_extracted_texts() {
                     sourceSelect.addEventListener("change", updateSource);
                     updateSource();
                 }
+
+                var ajaxUrl = window.ajaxurl || ' . wp_json_encode(admin_url('admin-ajax.php')) . ';
+                document.querySelectorAll(".sl-translation-form").forEach(function(form) {
+                    form.addEventListener("submit", function(event) {
+                        if (!window.fetch) {
+                            return;
+                        }
+                        event.preventDefault();
+
+                        var formData = new FormData(form);
+                        formData.append("action", "sl_save_custom_translation");
+
+                        var row = form.closest("tr");
+                        var translatedInput = row ? row.querySelector(\'input[name="translated_text"]\') : null;
+                        if (translatedInput) {
+                            formData.set("translated_text", translatedInput.value);
+                        }
+
+                        var status = form.querySelector(".sl-translation-status");
+                        var submitButton = form.querySelector(\'input[type="submit"], button[type="submit"]\');
+                        if (status) {
+                            status.textContent = "Saving...";
+                            status.className = "sl-translation-status is-saving";
+                        }
+                        if (submitButton) {
+                            submitButton.disabled = true;
+                        }
+
+                        fetch(ajaxUrl, {
+                            method: "POST",
+                            credentials: "same-origin",
+                            body: formData
+                        })
+                            .then(function(response) {
+                                return response.json();
+                            })
+                            .then(function(data) {
+                                if (data && data.success) {
+                                    var message = (data.data && data.data.message) ? data.data.message : "Saved.";
+                                    if (status) {
+                                        status.textContent = message;
+                                        status.className = "sl-translation-status is-success";
+                                    }
+                                    if (submitButton && submitButton.value) {
+                                        submitButton.value = "Update";
+                                    }
+                                    if (data.data && data.data.translation_id) {
+                                        var translationInput = form.querySelector(\'input[name="translation_id"]\');
+                                        if (!translationInput) {
+                                            translationInput = document.createElement("input");
+                                            translationInput.type = "hidden";
+                                            translationInput.name = "translation_id";
+                                            form.appendChild(translationInput);
+                                        }
+                                        translationInput.value = data.data.translation_id;
+                                    }
+                                } else {
+                                    var errorMessage = (data && data.data && data.data.message) ? data.data.message : "Unable to save translation.";
+                                    if (status) {
+                                        status.textContent = errorMessage;
+                                        status.className = "sl-translation-status is-error";
+                                    }
+                                }
+                            })
+                            .catch(function() {
+                                if (status) {
+                                    status.textContent = "Unable to save translation.";
+                                    status.className = "sl-translation-status is-error";
+                                }
+                            })
+                            .finally(function() {
+                                if (submitButton) {
+                                    submitButton.disabled = false;
+                                }
+                            });
+                    });
+                });
             });
         </script>';
     }
@@ -886,21 +1022,34 @@ function sl_display_extracted_texts() {
     echo '</div>';
 }
 
-// Function to save custom translations entered by admin
-function sl_save_custom_translation() {
+function sl_handle_custom_translation_save($request) {
     global $wpdb;
     $translation_table_name = $wpdb->prefix . 'extracted_text_translations';
 
-    $extracted_text_id = intval($_POST['extracted_text_id']);
-    $target_language = sanitize_text_field($_POST['target_language']);
-    $translated_text = sanitize_textarea_field($_POST['translated_text']);
+    if (!current_user_can('manage_options')) {
+        return ['status' => 'error', 'message' => 'You are not allowed to do that.'];
+    }
 
-    // Check if we're updating an existing translation
-    if (isset($_POST['translation_id']) && !empty($_POST['translation_id'])) {
-        $translation_id = intval($_POST['translation_id']);
+    $nonce = '';
+    if (isset($request['sl_save_custom_translation_nonce'])) {
+        $nonce = sanitize_text_field(wp_unslash($request['sl_save_custom_translation_nonce']));
+    }
+    if ($nonce === '' || !wp_verify_nonce($nonce, 'sl_save_custom_translation')) {
+        return ['status' => 'error', 'message' => 'Security check failed. Please refresh and try again.'];
+    }
 
-        // Update existing translation
-        $wpdb->update(
+    $extracted_text_id = isset($request['extracted_text_id']) ? intval($request['extracted_text_id']) : 0;
+    $target_language = isset($request['target_language']) ? sanitize_text_field(wp_unslash($request['target_language'])) : '';
+    $translated_text = isset($request['translated_text']) ? sanitize_textarea_field(wp_unslash($request['translated_text'])) : '';
+
+    if ($extracted_text_id <= 0 || $target_language === '') {
+        return ['status' => 'error', 'message' => 'Missing translation details.'];
+    }
+
+    $translation_id = isset($request['translation_id']) ? intval($request['translation_id']) : 0;
+
+    if ($translation_id > 0) {
+        $updated = $wpdb->update(
             $translation_table_name,
             ['translated_text' => $translated_text],
             ['id' => $translation_id],
@@ -908,42 +1057,80 @@ function sl_save_custom_translation() {
             ['%d']
         );
 
-        echo '<div class="updated"><p>Translation updated successfully.</p></div>';
-    } else {
-        // Check if translation already exists for this text and language
-        $existing = $wpdb->get_var($wpdb->prepare(
-            "SELECT id FROM $translation_table_name WHERE extracted_text_id = %d AND target_language = %s",
-            $extracted_text_id,
-            $target_language
-        ));
-
-        if ($existing) {
-            // Update existing
-            $wpdb->update(
-                $translation_table_name,
-                ['translated_text' => $translated_text],
-                [
-                    'extracted_text_id' => $extracted_text_id,
-                    'target_language' => $target_language
-                ],
-                ['%s'],
-                ['%d', '%s']
-            );
-            echo '<div class="updated"><p>Translation updated successfully.</p></div>';
-        } else {
-            // Insert new translation
-            $wpdb->insert(
-                $translation_table_name,
-                [
-                    'extracted_text_id' => $extracted_text_id,
-                    'target_language' => $target_language,
-                    'translated_text' => $translated_text,
-                ]
-            );
-            echo '<div class="updated"><p>Custom translation added successfully.</p></div>';
+        if ($updated === false) {
+            return ['status' => 'error', 'message' => 'Unable to update translation.'];
         }
+
+        return [
+            'status' => 'updated',
+            'message' => 'Translation updated successfully.',
+            'translation_id' => $translation_id,
+        ];
     }
+
+    $existing_id = $wpdb->get_var($wpdb->prepare(
+        "SELECT id FROM $translation_table_name WHERE extracted_text_id = %d AND target_language = %s",
+        $extracted_text_id,
+        $target_language
+    ));
+
+    if ($existing_id) {
+        $updated = $wpdb->update(
+            $translation_table_name,
+            ['translated_text' => $translated_text],
+            [
+                'extracted_text_id' => $extracted_text_id,
+                'target_language' => $target_language,
+            ],
+            ['%s'],
+            ['%d', '%s']
+        );
+        if ($updated === false) {
+            return ['status' => 'error', 'message' => 'Unable to update translation.'];
+        }
+        return [
+            'status' => 'updated',
+            'message' => 'Translation updated successfully.',
+            'translation_id' => (int) $existing_id,
+        ];
+    }
+
+    $inserted = $wpdb->insert(
+        $translation_table_name,
+        [
+            'extracted_text_id' => $extracted_text_id,
+            'target_language' => $target_language,
+            'translated_text' => $translated_text,
+        ],
+        ['%d', '%s', '%s']
+    );
+
+    if (!$inserted) {
+        return ['status' => 'error', 'message' => 'Unable to save translation.'];
+    }
+
+    return [
+        'status' => 'saved',
+        'message' => 'Custom translation added successfully.',
+        'translation_id' => (int) $wpdb->insert_id,
+    ];
 }
+
+// Function to save custom translations entered by admin
+function sl_save_custom_translation() {
+    $result = sl_handle_custom_translation_save($_POST);
+    $class = $result['status'] === 'error' ? 'notice notice-error' : 'updated';
+    echo '<div class="' . esc_attr($class) . '"><p>' . esc_html($result['message']) . '</p></div>';
+}
+
+function sl_save_custom_translation_ajax() {
+    $result = sl_handle_custom_translation_save($_POST);
+    if ($result['status'] === 'error') {
+        wp_send_json_error($result);
+    }
+    wp_send_json_success($result);
+}
+add_action('wp_ajax_sl_save_custom_translation', 'sl_save_custom_translation_ajax');
 
 function sl_add_custom_extracted_text($raw_text, $source_locale) {
     global $wpdb;
