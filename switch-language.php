@@ -554,6 +554,152 @@ function sl_replace_text_in_tokens(array $tokens, array $replaceable, $search_te
     return $tokens;
 }
 
+function sl_replace_text_in_tokens_with_overlaps(array $tokens, array $replaceable, array $replacements) {
+    if (empty($replacements)) {
+        return $tokens;
+    }
+
+    foreach ($tokens as $index => $token) {
+        if (!empty($replaceable[$index])) {
+            $tokens[$index] = sl_replace_text_with_best_matches($token, $replacements);
+        }
+    }
+
+    return $tokens;
+}
+
+function sl_replace_text_with_best_matches($text, array $replacements) {
+    if ($text === '' || empty($replacements)) {
+        return $text;
+    }
+
+    $matches = sl_collect_replacement_matches($text, $replacements);
+    if (empty($matches)) {
+        return $text;
+    }
+
+    $selected_matches = sl_select_best_replacement_matches($matches);
+    if (empty($selected_matches)) {
+        return $text;
+    }
+
+    $output = '';
+    $cursor = 0;
+    $text_length = strlen($text);
+    foreach ($selected_matches as $match) {
+        if ($match['start'] > $cursor) {
+            $output .= substr($text, $cursor, $match['start'] - $cursor);
+        }
+        $output .= $match['replace'];
+        $cursor = $match['end'];
+    }
+    if ($cursor < $text_length) {
+        $output .= substr($text, $cursor);
+    }
+
+    return $output;
+}
+
+function sl_collect_replacement_matches($text, array $replacements) {
+    $matches = [];
+    $text_length = strlen($text);
+
+    foreach ($replacements as $replacement) {
+        $search_text = $replacement['search'];
+        $search_length = $replacement['length'];
+        if ($search_text === '' || $search_length === 0 || $search_length > $text_length) {
+            continue;
+        }
+
+        $offset = 0;
+        while (($pos = strpos($text, $search_text, $offset)) !== false) {
+            $matches[] = [
+                'start' => $pos,
+                'end' => $pos + $search_length,
+                'replace' => $replacement['replace'],
+                'weight' => $search_length,
+                'order' => $replacement['order'],
+            ];
+            $offset = $pos + 1;
+        }
+    }
+
+    return $matches;
+}
+
+function sl_select_best_replacement_matches(array $matches) {
+    usort($matches, function($a, $b) {
+        if ($a['end'] === $b['end']) {
+            if ($a['start'] === $b['start']) {
+                return $a['order'] <=> $b['order'];
+            }
+            return $a['start'] <=> $b['start'];
+        }
+        return $a['end'] <=> $b['end'];
+    });
+
+    $count = count($matches);
+    $ends = array_column($matches, 'end');
+    $previous = array_fill(0, $count, -1);
+    for ($i = 0; $i < $count; $i++) {
+        $start = $matches[$i]['start'];
+        $lo = 0;
+        $hi = $i - 1;
+        $index = -1;
+        while ($lo <= $hi) {
+            $mid = intdiv($lo + $hi, 2);
+            if ($ends[$mid] <= $start) {
+                $index = $mid;
+                $lo = $mid + 1;
+            } else {
+                $hi = $mid - 1;
+            }
+        }
+        $previous[$i] = $index;
+    }
+
+    $dp_weight = array_fill(0, $count + 1, 0);
+    $dp_count = array_fill(0, $count + 1, 0);
+    $choose = array_fill(0, $count, false);
+
+    // Prefer the set of matches that maximizes replaced length, then fewer replacements.
+    for ($i = 1; $i <= $count; $i++) {
+        $match = $matches[$i - 1];
+        $prev_index = $previous[$i - 1] + 1;
+        $include_weight = $match['weight'] + $dp_weight[$prev_index];
+        $include_count = 1 + $dp_count[$prev_index];
+        $exclude_weight = $dp_weight[$i - 1];
+        $exclude_count = $dp_count[$i - 1];
+
+        if ($include_weight > $exclude_weight || ($include_weight === $exclude_weight && $include_count < $exclude_count)) {
+            $dp_weight[$i] = $include_weight;
+            $dp_count[$i] = $include_count;
+            $choose[$i - 1] = true;
+        } else {
+            $dp_weight[$i] = $exclude_weight;
+            $dp_count[$i] = $exclude_count;
+            $choose[$i - 1] = false;
+        }
+    }
+
+    $selected = [];
+    $i = $count;
+    while ($i > 0) {
+        if ($choose[$i - 1]) {
+            $selected[] = $matches[$i - 1];
+            $i = $previous[$i - 1] + 1;
+        } else {
+            $i--;
+        }
+    }
+
+    usort($selected, function($a, $b) {
+        return $a['start'] <=> $b['start'];
+    });
+
+    return $selected;
+}
+
 // Function to process the buffer and replace text with translations, allowing for partial language matches (e.g., 'en' matches 'en_US' or 'en_GB')
 function sl_process_translations_in_buffer($content) {
     global $wpdb;
@@ -585,7 +731,10 @@ function sl_process_translations_in_buffer($content) {
     $content = sl_mask_shortcodes($content, $shortcode_map, $shortcode_reverse_map);
     list($content_tokens, $replaceable_tokens) = sl_split_html_for_translation($content);
 
-    // Replace each original text with its translation, if available
+    $replacements = [];
+    $replacement_index = 0;
+
+    // Collect candidate replacements with their translations.
     foreach ($extracted_texts as $text) {
         if (sl_is_text_only_shortcodes($text->original_text)) {
             continue;
@@ -619,8 +768,23 @@ function sl_process_translations_in_buffer($content) {
                 $replacement_text = strtr($replacement_text, $shortcode_reverse_map);
             }
 
-            $content_tokens = sl_replace_text_in_tokens($content_tokens, $replaceable_tokens, $search_text, $replacement_text);
+            if ($search_text === '' || $search_text === $replacement_text) {
+                continue;
+            }
+
+            if (!isset($replacements[$search_text])) {
+                $replacements[$search_text] = [
+                    'search' => $search_text,
+                    'replace' => $replacement_text,
+                    'length' => strlen($search_text),
+                    'order' => $replacement_index++,
+                ];
+            }
         }
+    }
+
+    if (!empty($replacements)) {
+        $content_tokens = sl_replace_text_in_tokens_with_overlaps($content_tokens, $replaceable_tokens, array_values($replacements));
     }
 
     // Return the modified content with translations
