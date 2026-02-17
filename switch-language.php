@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Switch Language
  * Description: Automatically switches the WordPress site language based on the user's browser language setting
- * Version: 1.3.4
+ * Version: 1.3.5
  * Author: Strong Anchor Tech
  * Author URI: https://stronganchortech.com
  * License: GPL2 or later
@@ -609,6 +609,109 @@ function sl_text_length($text) {
     return strlen($text);
 }
 
+function sl_text_substr($text, $start, $length = null) {
+    if (function_exists('mb_substr')) {
+        if ($length === null) {
+            return mb_substr($text, $start, null, 'UTF-8');
+        }
+        return mb_substr($text, $start, $length, 'UTF-8');
+    }
+
+    if ($length === null) {
+        return substr($text, $start);
+    }
+
+    return substr($text, $start, $length);
+}
+
+function sl_get_sentence_boundary_positions($text) {
+    $boundaries = [];
+    if ($text === '') {
+        return $boundaries;
+    }
+
+    if (!preg_match_all('/[.!?…。！？]+(?:["\')\]\x{00BB}\x{2019}\x{201D}]*)\s*/u', $text, $matches, PREG_OFFSET_CAPTURE)) {
+        return $boundaries;
+    }
+
+    foreach ($matches[0] as $match) {
+        $byte_end = $match[1] + strlen($match[0]);
+        if ($byte_end <= 0) {
+            continue;
+        }
+
+        if (function_exists('mb_strlen')) {
+            $boundaries[] = mb_strlen(substr($text, 0, $byte_end), 'UTF-8');
+        } else {
+            $boundaries[] = $byte_end;
+        }
+    }
+
+    return array_values(array_unique($boundaries));
+}
+
+function sl_text_ends_with_sentence_punctuation($text) {
+    return preg_match('/[.!?…。！？]\s*$/u', trim($text)) === 1;
+}
+
+function sl_build_excerpt_from_translation($translated_text, $ratio) {
+    $translated_text = trim($translated_text);
+    if ($translated_text === '') {
+        return '';
+    }
+
+    if ($ratio >= 0.98) {
+        return $translated_text;
+    }
+
+    $translated_length = sl_text_length($translated_text);
+    if ($translated_length <= 0) {
+        return '';
+    }
+
+    $target_ratio = max(0.35, min(0.97, (float) $ratio));
+    $target_length = (int) floor($translated_length * $target_ratio);
+    $target_length = max(12, min($translated_length - 1, $target_length));
+    if ($target_length >= $translated_length) {
+        return $translated_text;
+    }
+
+    $boundary = 0;
+    $boundaries = sl_get_sentence_boundary_positions($translated_text);
+    if (!empty($boundaries)) {
+        $min_before = max(10, (int) floor($target_length * 0.65));
+        foreach ($boundaries as $position) {
+            if ($position <= $target_length && $position >= $min_before) {
+                $boundary = $position;
+            }
+        }
+
+        if ($boundary === 0) {
+            $max_after = min($translated_length, $target_length + max(10, (int) floor($target_length * 0.35)));
+            foreach ($boundaries as $position) {
+                if ($position > $target_length && $position <= $max_after) {
+                    $boundary = $position;
+                    break;
+                }
+            }
+        }
+    }
+
+    if ($boundary > 0) {
+        return trim(sl_text_substr($translated_text, 0, $boundary));
+    }
+
+    $excerpt = trim(sl_text_substr($translated_text, 0, $target_length));
+    if (preg_match('/^(.+)\s+\S*$/u', $excerpt, $match)) {
+        $word_safe = trim($match[1]);
+        if ($word_safe !== '' && sl_text_length($word_safe) >= (int) floor($target_length * 0.6)) {
+            $excerpt = $word_safe;
+        }
+    }
+
+    return $excerpt;
+}
+
 function sl_normalize_excerpt_text($text, &$ellipsis = '') {
     $ellipsis = '';
     if ($text === '') {
@@ -703,12 +806,18 @@ function sl_find_excerpt_replacement($text, array $replacements) {
         return '';
     }
 
+    $excerpt_text = sl_build_excerpt_from_translation($replacement_text, $best_ratio);
+    if ($excerpt_text !== '') {
+        $replacement_text = $excerpt_text;
+    }
+
+    $is_trimmed_excerpt = sl_text_length($replacement_text) < sl_text_length(trim($best['replace'] ?? ''));
     $use_ellipsis = $ellipsis;
-    if ($use_ellipsis === '' && $best_ratio < 0.95) {
+    if ($use_ellipsis === '' && $is_trimmed_excerpt && !sl_text_ends_with_sentence_punctuation($replacement_text)) {
         $use_ellipsis = '...';
     }
 
-    if ($use_ellipsis !== '' && !preg_match('/' . preg_quote($use_ellipsis, '/') . '$/u', $replacement_text)) {
+    if ($use_ellipsis !== '' && !preg_match('/(\.\.\.|…)\s*$/u', $replacement_text)) {
         $replacement_text .= $use_ellipsis;
     }
 
@@ -1616,6 +1725,101 @@ function sl_translate_and_display_texts($source_lang, $target_lang, $results) {
     return $translated_count;
 }
 
+function sl_prepare_extracted_text_candidate($text) {
+    $text = wp_strip_all_tags((string) $text, true);
+    if ($text === '') {
+        return '';
+    }
+
+    $decoded = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    if ($decoded !== '') {
+        $text = $decoded;
+    }
+
+    $text = str_replace("\xC2\xA0", ' ', $text);
+    $text = preg_replace('/\s+/u', ' ', $text);
+    $text = trim($text);
+    $text = preg_replace('/\s*\[\s*(?:\.\.\.|…)\s*\]\s*$/u', '...', $text);
+
+    return trim($text);
+}
+
+function sl_insert_extracted_text_if_missing($table_name, $text, $source_locale = '') {
+    global $wpdb;
+
+    $prepared_text = sl_prepare_extracted_text_candidate($text);
+    if ($prepared_text === '' || preg_match('/^[\W\d]+$/u', $prepared_text)) {
+        return false;
+    }
+
+    if (sl_is_text_only_shortcodes($prepared_text)) {
+        return false;
+    }
+
+    if ($source_locale === '') {
+        $source_locale = get_locale();
+    }
+
+    $existing_text = $wpdb->get_var($wpdb->prepare(
+        "SELECT id FROM $table_name WHERE BINARY original_text = %s",
+        $prepared_text
+    ));
+
+    if ($existing_text) {
+        return false;
+    }
+
+    $inserted = $wpdb->insert(
+        $table_name,
+        [
+            'original_text' => $prepared_text,
+            'source_language' => $source_locale,
+        ]
+    );
+
+    return (bool) $inserted;
+}
+
+function sl_extract_excerpt_texts_from_post($table_name, $post) {
+    if (!is_object($post) || empty($post->ID)) {
+        return;
+    }
+
+    $candidates = [];
+
+    $manual_excerpt = get_post_field('post_excerpt', $post->ID, 'raw');
+    if (is_string($manual_excerpt) && $manual_excerpt !== '') {
+        $candidates[] = $manual_excerpt;
+    }
+
+    $generated_excerpt = get_the_excerpt($post);
+    if (is_string($generated_excerpt) && $generated_excerpt !== '') {
+        $candidates[] = $generated_excerpt;
+    }
+
+    $content_text = sl_prepare_extracted_text_candidate($post->post_content ?? '');
+    if ($content_text !== '') {
+        $content_length = sl_text_length($content_text);
+        $max_sentence_length = min(260, $content_length);
+        $boundaries = sl_get_sentence_boundary_positions($content_text);
+        foreach ($boundaries as $boundary) {
+            if ($boundary >= 60 && $boundary <= $max_sentence_length) {
+                $candidates[] = sl_text_substr($content_text, 0, $boundary);
+                break;
+            }
+        }
+    }
+
+    if (empty($candidates)) {
+        return;
+    }
+
+    $candidates = array_values(array_unique(array_filter($candidates, 'is_string')));
+    foreach ($candidates as $candidate) {
+        sl_insert_extracted_text_if_missing($table_name, $candidate);
+    }
+}
+
 // Function to extract text from all published pages, posts, WooCommerce products, and navigation menus
 function sl_extract_text_from_all_pages() {
     global $wpdb;
@@ -1634,6 +1838,9 @@ function sl_extract_text_from_all_pages() {
     $pages = get_posts($args);
 
     foreach ($pages as $page) {
+        sl_insert_extracted_text_if_missing($table_name, $page->post_title ?? '');
+        sl_extract_excerpt_texts_from_post($table_name, $page);
+
         // Check if this post is a WooCommerce product
         if ($page->post_type === 'product') {
             // Get the permalink (URL) for the product page
@@ -1656,34 +1863,7 @@ function sl_extract_text_from_all_pages() {
 
             if (!empty($matches[1])) {
                 foreach ($matches[1] as $extracted_text) {
-                    // Sanitize and clean up extracted text
-                    $extracted_text = trim(strip_tags($extracted_text));
-
-                    // Skip empty strings and texts that are only numbers/punctuation/symbols
-                    if (empty($extracted_text) || preg_match('/^[\W\d]+$/', $extracted_text)) {
-                        continue;
-                    }
-
-                    if (sl_is_text_only_shortcodes($extracted_text)) {
-                        continue;
-                    }
-
-                    // Check if this text already exists in the database to avoid duplicates
-                    $existing_text = $wpdb->get_var($wpdb->prepare(
-                        "SELECT id FROM $table_name WHERE BINARY original_text = %s",
-                        $extracted_text
-                    ));
-
-                    if (!$existing_text && !empty($extracted_text)) {
-                        // Insert the unique extracted text into the database
-                        $wpdb->insert(
-                            $table_name,
-                            [
-                                'original_text' => $extracted_text,
-                                'source_language' => get_locale(),
-                            ]
-                        );
-                    }
+                    sl_insert_extracted_text_if_missing($table_name, $extracted_text);
                 }
             }
         } else {
@@ -1707,34 +1887,7 @@ function sl_extract_text_from_all_pages() {
 
             if (!empty($matches[1])) {
                 foreach ($matches[1] as $extracted_text) {
-                    // Sanitize and clean up extracted text
-                    $extracted_text = trim(strip_tags($extracted_text));
-
-                    // Skip empty strings and texts that are only numbers/punctuation/symbols
-                    if (empty($extracted_text) || preg_match('/^[\W\d]+$/', $extracted_text)) {
-                        continue;
-                    }
-
-                    if (sl_is_text_only_shortcodes($extracted_text)) {
-                        continue;
-                    }
-
-                    // Check if this text already exists in the database to avoid duplicates
-                    $existing_text = $wpdb->get_var($wpdb->prepare(
-                        "SELECT id FROM $table_name WHERE original_text = %s",
-                        $extracted_text
-                    ));
-
-                    if (!$existing_text && !empty($extracted_text)) {
-                        // Insert the unique extracted text into the database
-                        $wpdb->insert(
-                            $table_name,
-                            [
-                                'original_text' => $extracted_text,
-                                'source_language' => get_locale(),
-                            ]
-                        );
-                    }
+                    sl_insert_extracted_text_if_missing($table_name, $extracted_text);
                 }
             }
         }
@@ -1745,8 +1898,6 @@ function sl_extract_text_from_all_pages() {
 
 // Function to extract text from WordPress navigation menus
 function sl_extract_text_from_menus($table_name) {
-    global $wpdb;
-
     // Get all registered navigation menus
     $menus = wp_get_nav_menus();
 
@@ -1757,41 +1908,13 @@ function sl_extract_text_from_menus($table_name) {
         if (!empty($menu_items)) {
             foreach ($menu_items as $menu_item) {
                 // Extract the menu item title
-                $menu_text = trim($menu_item->title);
-
-                // Skip empty strings and texts that are only numbers/punctuation/symbols
-                if (empty($menu_text) || preg_match('/^[\W\d]+$/', $menu_text)) {
-                    continue;
-                }
-
-                if (sl_is_text_only_shortcodes($menu_text)) {
-                    continue;
-                }
-
-                // Check if this text already exists in the database to avoid duplicates
-                $existing_text = $wpdb->get_var($wpdb->prepare(
-                    "SELECT id FROM $table_name WHERE BINARY original_text = %s",
-                    $menu_text
-                ));
-
-                if (!$existing_text) {
-                    // Insert the unique extracted text into the database
-                    $wpdb->insert(
-                        $table_name,
-                        [
-                            'original_text' => $menu_text,
-                            'source_language' => get_locale(),
-                        ]
-                    );
-                }
+                sl_insert_extracted_text_if_missing($table_name, $menu_item->title);
             }
         }
     }
 }
 
 function sl_extract_text_from_navigation_blocks($table_name) {
-    global $wpdb;
-
     if (!function_exists('parse_blocks')) {
         return;
     }
@@ -1812,30 +1935,7 @@ function sl_extract_text_from_navigation_blocks($table_name) {
         sl_collect_navigation_block_labels($blocks, $labels);
 
         foreach ($labels as $label) {
-            $label = trim(strip_tags($label));
-
-            if (empty($label) || preg_match('/^[\W\d]+$/', $label)) {
-                continue;
-            }
-
-            if (sl_is_text_only_shortcodes($label)) {
-                continue;
-            }
-
-            $existing_text = $wpdb->get_var($wpdb->prepare(
-                "SELECT id FROM $table_name WHERE BINARY original_text = %s",
-                $label
-            ));
-
-            if (!$existing_text) {
-                $wpdb->insert(
-                    $table_name,
-                    [
-                        'original_text' => $label,
-                        'source_language' => get_locale(),
-                    ]
-                );
-            }
+            sl_insert_extracted_text_if_missing($table_name, $label);
         }
     }
 }
