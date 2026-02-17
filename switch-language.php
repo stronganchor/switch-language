@@ -1905,6 +1905,7 @@ function sl_prepare_extracted_text_candidate($text) {
 
 function sl_insert_extracted_text_if_missing($table_name, $text, $source_locale = '') {
     global $wpdb;
+    static $runtime_seen = [];
 
     $prepared_text = sl_prepare_extracted_text_candidate($text);
     if ($prepared_text === '' || preg_match('/^[\W\d]+$/u', $prepared_text)) {
@@ -1918,6 +1919,12 @@ function sl_insert_extracted_text_if_missing($table_name, $text, $source_locale 
     if ($source_locale === '') {
         $source_locale = get_locale();
     }
+
+    $runtime_key = md5($table_name . '|' . $prepared_text);
+    if (isset($runtime_seen[$runtime_key])) {
+        return false;
+    }
+    $runtime_seen[$runtime_key] = true;
 
     $existing_text = $wpdb->get_var($wpdb->prepare(
         "SELECT id FROM $table_name WHERE BINARY original_text = %s",
@@ -1937,6 +1944,36 @@ function sl_insert_extracted_text_if_missing($table_name, $text, $source_locale 
     );
 
     return (bool) $inserted;
+}
+
+function sl_build_character_excerpt_variant($text, $char_limit) {
+    $text = trim((string) $text);
+    $char_limit = (int) $char_limit;
+    if ($text === '' || $char_limit < 20) {
+        return '';
+    }
+
+    if (sl_text_length($text) <= $char_limit) {
+        return $text;
+    }
+
+    $excerpt = trim(sl_text_substr($text, 0, $char_limit));
+    if ($excerpt === '') {
+        return '';
+    }
+
+    if (preg_match('/^(.+)\s+\S*$/u', $excerpt, $match)) {
+        $word_safe = trim($match[1]);
+        if ($word_safe !== '' && sl_text_length($word_safe) >= (int) floor($char_limit * 0.65)) {
+            $excerpt = $word_safe;
+        }
+    }
+
+    if (!preg_match('/(\.\.\.|…)\s*$/u', $excerpt)) {
+        $excerpt .= '...';
+    }
+
+    return $excerpt;
 }
 
 function sl_extract_excerpt_texts_from_post($table_name, $post) {
@@ -1967,6 +2004,21 @@ function sl_extract_excerpt_texts_from_post($table_name, $post) {
                 break;
             }
         }
+
+        // Add common excerpt variants so grid/card snippets have exact translation entries.
+        foreach ([18, 24, 30, 40] as $word_length) {
+            $word_excerpt = wp_trim_words($content_text, $word_length, '...');
+            if (is_string($word_excerpt) && $word_excerpt !== '' && $word_excerpt !== $content_text) {
+                $candidates[] = $word_excerpt;
+            }
+        }
+
+        foreach ([110, 150, 190, 240] as $char_limit) {
+            $char_excerpt = sl_build_character_excerpt_variant($content_text, $char_limit);
+            if ($char_excerpt !== '') {
+                $candidates[] = $char_excerpt;
+            }
+        }
     }
 
     if (empty($candidates)) {
@@ -1979,14 +2031,154 @@ function sl_extract_excerpt_texts_from_post($table_name, $post) {
     }
 }
 
+function sl_collect_text_candidates_from_html($html) {
+    $candidates = [];
+    if (!is_string($html) || trim($html) === '') {
+        return $candidates;
+    }
+
+    if (class_exists('DOMDocument') && class_exists('DOMXPath')) {
+        $dom = new DOMDocument();
+        $libxml_previous_state = libxml_use_internal_errors(true);
+        $load_flags = 0;
+        if (defined('LIBXML_NOERROR')) {
+            $load_flags |= LIBXML_NOERROR;
+        }
+        if (defined('LIBXML_NOWARNING')) {
+            $load_flags |= LIBXML_NOWARNING;
+        }
+        if (defined('LIBXML_NONET')) {
+            $load_flags |= LIBXML_NONET;
+        }
+
+        $loaded = @$dom->loadHTML('<?xml encoding="utf-8" ?>' . $html, $load_flags);
+        libxml_clear_errors();
+        libxml_use_internal_errors($libxml_previous_state);
+
+        if ($loaded) {
+            $xpath = new DOMXPath($dom);
+            $text_nodes = $xpath->query(
+                '//text()[normalize-space(.) != "" and not(ancestor::script) and not(ancestor::style) and not(ancestor::noscript) and not(ancestor::template)]'
+            );
+
+            if ($text_nodes instanceof DOMNodeList) {
+                foreach ($text_nodes as $text_node) {
+                    $value = trim((string) $text_node->nodeValue);
+                    if ($value !== '') {
+                        $candidates[] = $value;
+                    }
+                }
+            }
+
+            // Capture common accessibility attributes used by custom card markup.
+            $attribute_nodes = $xpath->query('//*[@aria-label or @title or @alt]');
+            if ($attribute_nodes instanceof DOMNodeList) {
+                foreach ($attribute_nodes as $attribute_node) {
+                    if (!($attribute_node instanceof DOMElement)) {
+                        continue;
+                    }
+
+                    foreach (['aria-label', 'title', 'alt'] as $attribute_name) {
+                        if (!$attribute_node->hasAttribute($attribute_name)) {
+                            continue;
+                        }
+
+                        $attribute_value = trim((string) $attribute_node->getAttribute($attribute_name));
+                        if ($attribute_value !== '') {
+                            $candidates[] = $attribute_value;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (empty($candidates)) {
+        $html = preg_replace('#<style(.*?)>(.*?)</style>#is', '', $html);
+        $html = preg_replace('#<script(.*?)>(.*?)</script>#is', '', $html);
+        preg_match_all('/>([^<>]+)</u', $html, $matches);
+        if (!empty($matches[1])) {
+            $candidates = $matches[1];
+        }
+    }
+
+    return array_values(array_unique(array_filter($candidates, 'is_string')));
+}
+
+function sl_extract_text_from_html($table_name, $html, $source_locale = '') {
+    $candidates = sl_collect_text_candidates_from_html($html);
+    if (empty($candidates)) {
+        return 0;
+    }
+
+    $inserted_count = 0;
+    foreach ($candidates as $candidate) {
+        if (sl_insert_extracted_text_if_missing($table_name, $candidate, $source_locale)) {
+            $inserted_count++;
+        }
+    }
+
+    return $inserted_count;
+}
+
+function sl_extract_text_from_rendered_url($table_name, $url, $source_locale = '') {
+    $url = esc_url_raw((string) $url);
+    if ($url === '') {
+        return false;
+    }
+
+    $response = wp_remote_get($url, [
+        'timeout' => 25,
+        'redirection' => 3,
+    ]);
+
+    if (is_wp_error($response)) {
+        return false;
+    }
+
+    $status_code = (int) wp_remote_retrieve_response_code($response);
+    if ($status_code < 200 || $status_code >= 400) {
+        return false;
+    }
+
+    $html = wp_remote_retrieve_body($response);
+    if (!is_string($html) || trim($html) === '') {
+        return false;
+    }
+
+    sl_extract_text_from_html($table_name, $html, $source_locale);
+    return true;
+}
+
 // Function to extract text from all published pages, posts, WooCommerce products, and navigation menus
 function sl_extract_text_from_all_pages() {
     global $wpdb;
     $table_name = $wpdb->prefix . 'extracted_texts';
+    $source_locale = get_locale();
+    $processed_urls = [];
 
     // First, extract text from navigation menus and blocks
     sl_extract_text_from_menus($table_name);
     sl_extract_text_from_navigation_blocks($table_name);
+
+    // Capture rendered text from homepage and posts index where grids/cards often live.
+    $seed_urls = [home_url('/')];
+    $posts_page_id = (int) get_option('page_for_posts');
+    if ($posts_page_id > 0) {
+        $posts_page_url = get_permalink($posts_page_id);
+        if (!empty($posts_page_url)) {
+            $seed_urls[] = $posts_page_url;
+        }
+    }
+
+    $seed_urls = array_values(array_unique(array_filter(array_map('esc_url_raw', $seed_urls))));
+    foreach ($seed_urls as $seed_url) {
+        if (isset($processed_urls[$seed_url])) {
+            continue;
+        }
+        $processed_urls[$seed_url] = true;
+        sl_extract_text_from_rendered_url($table_name, $seed_url, $source_locale);
+    }
 
     // Query all published pages, posts, and WooCommerce products
     $args = [
@@ -1997,62 +2189,32 @@ function sl_extract_text_from_all_pages() {
     $pages = get_posts($args);
 
     foreach ($pages as $page) {
-        sl_insert_extracted_text_if_missing($table_name, $page->post_title ?? '');
+        sl_insert_extracted_text_if_missing($table_name, $page->post_title ?? '', $source_locale);
         sl_extract_excerpt_texts_from_post($table_name, $page);
 
-        // Check if this post is a WooCommerce product
-        if ($page->post_type === 'product') {
-            // Get the permalink (URL) for the product page
-            $product_url = get_permalink($page->ID);
+        $page_url = get_permalink($page->ID);
+        $page_url = esc_url_raw((string) $page_url);
+        $did_extract_rendered = false;
+        if ($page_url !== '' && !isset($processed_urls[$page_url])) {
+            $processed_urls[$page_url] = true;
+            $did_extract_rendered = sl_extract_text_from_rendered_url($table_name, $page_url, $source_locale);
+        }
 
-            // Fetch the front-end HTML of the product page
-            $response = wp_remote_get($product_url);
-            if (is_wp_error($response)) {
-                continue;
+        if (!$did_extract_rendered) {
+            $rendered_content = '';
+            if (is_string($page->post_content) && $page->post_content !== '') {
+                $rendered_content = apply_filters('the_content', $page->post_content);
+            }
+            if (is_string($rendered_content) && trim($rendered_content) !== '') {
+                sl_extract_text_from_html($table_name, $rendered_content, $source_locale);
             }
 
-            $html = wp_remote_retrieve_body($response);
-
-            // Use regex to extract all text within HTML tags, excluding script and style content
-            $html = preg_replace('#<style(.*?)>(.*?)</style>#is', '', $html);
-            $html = preg_replace('#<script(.*?)>(.*?)</script>#is', '', $html);
-
-            // Use regex to extract text from within HTML tags
-            preg_match_all('/>([^<>]+)</', $html, $matches);
-
-            if (!empty($matches[1])) {
-                foreach ($matches[1] as $extracted_text) {
-                    sl_insert_extracted_text_if_missing($table_name, $extracted_text);
-                }
-            }
-        } else {
-            // Handle regular posts and pages (non-WooCommerce products)
-            // Initialize content to extract from this post
-            $content_to_extract = '';
-
-            // Get the post/page title and content
-            $page_title = $page->post_title;
-            $page_content = $page->post_content;
-
-            // Combine title and content for text extraction
-            $content_to_extract .= $page_title . "\n" . $page_content;
-
-            // Remove inline <style> and <script> tags and their content
-            $content_to_extract = preg_replace('#<style(.*?)>(.*?)</style>#is', '', $content_to_extract);
-            $content_to_extract = preg_replace('#<script(.*?)>(.*?)</script>#is', '', $content_to_extract);
-
-            // Use regex to extract text from within HTML tags
-            preg_match_all('/>([^<>]+)</', $content_to_extract, $matches);
-
-            if (!empty($matches[1])) {
-                foreach ($matches[1] as $extracted_text) {
-                    sl_insert_extracted_text_if_missing($table_name, $extracted_text);
-                }
-            }
+            $fallback_content = ($page->post_title ?? '') . "\n" . ($page->post_content ?? '');
+            sl_extract_text_from_html($table_name, $fallback_content, $source_locale);
         }
     }
 
-    echo '<div class="updated"><p>Text extraction from all pages, posts, products, and navigation menus completed. Check the Extracted Texts page.</p></div>';
+    echo '<div class="updated"><p>Text extraction from rendered pages, posts, products, custom sections, and navigation menus completed. Check the Extracted Texts page.</p></div>';
 }
 
 // Function to extract text from WordPress navigation menus
