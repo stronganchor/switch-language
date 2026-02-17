@@ -32,16 +32,18 @@ function sl_deepl_translate_text($text, $translate_to_lang, $translate_from_lang
 
     // Prepare the request data
     $data = [
-        'auth_key' => $api_key,
         'text' => $text,
         'target_lang' => $translate_to_lang,
-        'source_lang' => $translate_from_lang,
     ];
+    if (!empty($translate_from_lang)) {
+        $data['source_lang'] = $translate_from_lang;
+    }
 
     // Use wp_remote_post to send the request
     $response = wp_remote_post($endpoint, [
         'body' => $data,
         'headers' => [
+            'Authorization' => 'DeepL-Auth-Key ' . $api_key,
             'Content-Type' => 'application/x-www-form-urlencoded',
         ],
         'timeout' => 20,
