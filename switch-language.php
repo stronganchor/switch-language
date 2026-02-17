@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Switch Language
  * Description: Automatically switches the WordPress site language based on the user's browser language setting
- * Version: 1.3.3
+ * Version: 1.3.4
  * Author: Strong Anchor Tech
  * Author URI: https://stronganchortech.com
  * License: GPL2 or later
@@ -575,7 +575,8 @@ function sl_replace_text_with_best_matches($text, array $replacements) {
 
     $matches = sl_collect_replacement_matches($text, $replacements);
     if (empty($matches)) {
-        return $text;
+        $excerpt_replacement = sl_find_excerpt_replacement($text, $replacements);
+        return $excerpt_replacement !== '' ? $excerpt_replacement : $text;
     }
 
     $selected_matches = sl_select_best_replacement_matches($matches);
@@ -600,6 +601,183 @@ function sl_replace_text_with_best_matches($text, array $replacements) {
     return $output;
 }
 
+function sl_text_length($text) {
+    if (function_exists('mb_strlen')) {
+        return mb_strlen($text, 'UTF-8');
+    }
+
+    return strlen($text);
+}
+
+function sl_normalize_excerpt_text($text, &$ellipsis = '') {
+    $ellipsis = '';
+    if ($text === '') {
+        return '';
+    }
+
+    $decoded = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    if ($decoded !== '') {
+        $text = $decoded;
+    }
+
+    $text = str_replace("\xC2\xA0", ' ', $text);
+    $text = preg_replace('/\s+/u', ' ', $text);
+    $text = trim($text);
+
+    if ($text === '') {
+        return '';
+    }
+
+    if (preg_match('/(\.\.\.|…)\s*$/u', $text, $matches)) {
+        $ellipsis = $matches[1];
+        $text = trim(preg_replace('/(\.\.\.|…)\s*$/u', '', $text));
+    }
+
+    return $text;
+}
+
+function sl_find_excerpt_replacement($text, array $replacements) {
+    $trimmed = $text;
+    $leading_ws = '';
+    $trailing_ws = '';
+    if (preg_match('/^\s+/u', $trimmed, $match)) {
+        $leading_ws = $match[0];
+    }
+    if (preg_match('/\s+$/u', $trimmed, $match)) {
+        $trailing_ws = $match[0];
+    }
+    $trimmed = trim($trimmed);
+
+    if ($trimmed === '') {
+        return '';
+    }
+
+    $ellipsis = '';
+    $normalized = sl_normalize_excerpt_text($trimmed, $ellipsis);
+    if ($normalized === '') {
+        return '';
+    }
+
+    $normalized_length = sl_text_length($normalized);
+    if ($normalized_length < 20) {
+        return '';
+    }
+
+    $best = null;
+    $best_ratio = 0;
+    $best_length = 0;
+
+    foreach ($replacements as $replacement) {
+        $normalized_search = $replacement['normalized'] ?? '';
+        if ($normalized_search === '') {
+            continue;
+        }
+
+        if (strpos($normalized_search, $normalized) !== 0) {
+            continue;
+        }
+
+        $search_length = $replacement['normalized_length'] ?? sl_text_length($normalized_search);
+        if ($search_length <= 0) {
+            continue;
+        }
+
+        $ratio = $normalized_length / $search_length;
+        if ($ratio > $best_ratio || ($ratio === $best_ratio && $search_length > $best_length)) {
+            $best = $replacement;
+            $best_ratio = $ratio;
+            $best_length = $search_length;
+        }
+    }
+
+    if ($best === null) {
+        return '';
+    }
+
+    if ($best_ratio < 0.6 && $ellipsis === '') {
+        return '';
+    }
+
+    $replacement_text = trim($best['replace'] ?? '');
+    if ($replacement_text === '') {
+        return '';
+    }
+
+    $use_ellipsis = $ellipsis;
+    if ($use_ellipsis === '' && $best_ratio < 0.95) {
+        $use_ellipsis = '...';
+    }
+
+    if ($use_ellipsis !== '' && !preg_match('/' . preg_quote($use_ellipsis, '/') . '$/u', $replacement_text)) {
+        $replacement_text .= $use_ellipsis;
+    }
+
+    return $leading_ws . $replacement_text . $trailing_ws;
+}
+
+function sl_build_flexible_match_pattern($text) {
+    if ($text === '') {
+        return '';
+    }
+
+    $decoded = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    if ($decoded !== '') {
+        $text = $decoded;
+    }
+
+    static $entity_map = null;
+    if ($entity_map === null) {
+        $entity_map = [
+            "'" => ['&#039;', '&#39;', '&apos;', '’', '&#8217;', '&#x2019;', '&rsquo;', '‘', '&#8216;', '&#x2018;', '&lsquo;'],
+            '"' => ['&quot;', '&#34;', '&#x22;', '“', '&#8220;', '&#x201C;', '&ldquo;', '”', '&#8221;', '&#x201D;', '&rdquo;'],
+            '&' => ['&amp;', '&#38;', '&#038;', '&#x26;', '&#X26;'],
+            '’' => ['&#8217;', '&#x2019;', '&rsquo;'],
+            '‘' => ['&#8216;', '&#x2018;', '&lsquo;'],
+            '“' => ['&#8220;', '&#x201C;', '&ldquo;'],
+            '”' => ['&#8221;', '&#x201D;', '&rdquo;'],
+            '•' => ['&bull;', '&#8226;', '&#x2022;', '&#X2022;'],
+            '·' => ['&middot;', '&centerdot;', '&#183;', '&#xB7;', '&#XB7;'],
+            '—' => ['&#8212;', '&#x2014;', '&mdash;'],
+            '–' => ['&#8211;', '&#x2013;', '&ndash;'],
+            '…' => ['&#8230;', '&#x2026;', '&hellip;'],
+            "\xC2\xA0" => ['&nbsp;', '&#160;', '&#xA0;'],
+        ];
+    }
+
+    $pattern = '';
+    $needs_pattern = false;
+    $chars = preg_split('//u', $text, -1, PREG_SPLIT_NO_EMPTY);
+    if (!is_array($chars)) {
+        return '';
+    }
+
+    foreach ($chars as $char) {
+        if (preg_match('/\s/u', $char)) {
+            $pattern .= '(?:\s|&nbsp;|&#160;|&#xA0;)+';
+            $needs_pattern = true;
+            continue;
+        }
+
+        if (isset($entity_map[$char])) {
+            $alternatives = array_merge([$char], $entity_map[$char]);
+            $escaped = array_map(function($item) {
+                return preg_quote($item, '~');
+            }, $alternatives);
+            $pattern .= '(?:' . implode('|', array_unique($escaped)) . ')';
+            $needs_pattern = true;
+            continue;
+        }
+
+        $pattern .= preg_quote($char, '~');
+    }
+
+    if (!$needs_pattern) {
+        return '';
+    }
+
+    return '~' . $pattern . '~u';
+}
+
 function sl_collect_replacement_matches($text, array $replacements) {
     $matches = [];
     $text_length = strlen($text);
@@ -611,15 +789,47 @@ function sl_collect_replacement_matches($text, array $replacements) {
             continue;
         }
 
+        $pattern = $replacement['pattern'] ?? '';
+        $found_any = false;
+        $local_positions = [];
         $offset = 0;
         while (($pos = strpos($text, $search_text, $offset)) !== false) {
-            $matches[] = [
-                'start' => $pos,
-                'end' => $pos + $search_length,
-                'replace' => $replacement['replace'],
-                'weight' => $search_length,
-                'order' => $replacement['order'],
-            ];
+            $found_any = true;
+            $end = $pos + $search_length;
+            $key = $pos . ':' . $end;
+            if (!isset($local_positions[$key])) {
+                $local_positions[$key] = true;
+                $matches[] = [
+                    'start' => $pos,
+                    'end' => $end,
+                    'replace' => $replacement['replace'],
+                    'weight' => $search_length,
+                    'order' => $replacement['order'],
+                ];
+            }
+            $offset = $pos + 1;
+        }
+
+        if ($found_any || $pattern === '') {
+            continue;
+        }
+
+        $offset = 0;
+        while ($offset <= $text_length && preg_match($pattern, $text, $found, PREG_OFFSET_CAPTURE, $offset)) {
+            $pos = $found[0][1];
+            $match_text = $found[0][0];
+            $end = $pos + strlen($match_text);
+            $key = $pos . ':' . $end;
+            if (!isset($local_positions[$key])) {
+                $local_positions[$key] = true;
+                $matches[] = [
+                    'start' => $pos,
+                    'end' => $end,
+                    'replace' => $replacement['replace'],
+                    'weight' => $search_length,
+                    'order' => $replacement['order'],
+                ];
+            }
             $offset = $pos + 1;
         }
     }
@@ -773,10 +983,16 @@ function sl_process_translations_in_buffer($content) {
             }
 
             if (!isset($replacements[$search_text])) {
+                $unused_ellipsis = '';
+                $normalized_excerpt = sl_normalize_excerpt_text($search_text, $unused_ellipsis);
+                $normalized_length = $normalized_excerpt !== '' ? sl_text_length($normalized_excerpt) : 0;
                 $replacements[$search_text] = [
                     'search' => $search_text,
                     'replace' => $replacement_text,
                     'length' => strlen($search_text),
+                    'normalized' => $normalized_excerpt,
+                    'normalized_length' => $normalized_length,
+                    'pattern' => sl_build_flexible_match_pattern($search_text),
                     'order' => $replacement_index++,
                 ];
             }
