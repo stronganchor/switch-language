@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Switch Language
  * Description: Automatically switches the WordPress site language based on the user's browser language setting
- * Version: 1.3.5
+ * Version: 1.3.6
  * Author: Strong Anchor Tech
  * Author URI: https://stronganchortech.com
  * License: GPL2 or later
@@ -328,8 +328,66 @@ function sl_deepl_api_key_callback() {
     echo '<input type="text" name="sl_deepl_api_key" value="' . esc_attr($deepl_api_key) . '" size="40">';
 }
 
+function sl_render_deepl_api_test_result($test_result) {
+    if (!is_array($test_result)) {
+        return;
+    }
+
+    $is_ok = !empty($test_result['ok']);
+    $class = $is_ok ? 'notice notice-success' : 'notice notice-error';
+    $messages = isset($test_result['messages']) && is_array($test_result['messages']) ? $test_result['messages'] : [];
+    $details = isset($test_result['details']) && is_array($test_result['details']) ? $test_result['details'] : [];
+
+    echo '<div class="' . esc_attr($class) . '" style="margin-top:12px;"><p>';
+    if (empty($messages)) {
+        echo $is_ok ? 'DeepL test passed.' : 'DeepL test failed.';
+    } else {
+        echo esc_html(implode(' ', array_map('strval', $messages)));
+    }
+    echo '</p>';
+
+    if (!empty($details)) {
+        echo '<ul style="margin:0 0 8px 18px;list-style:disc;">';
+        if (!empty($details['api_base_url'])) {
+            echo '<li><strong>Endpoint:</strong> ' . esc_html($details['api_base_url']) . '</li>';
+        }
+        if (!empty($details['key_suffix'])) {
+            echo '<li><strong>Key suffix:</strong> ' . esc_html($details['key_suffix']) . '</li>';
+        }
+        if (isset($details['target_language_count'])) {
+            echo '<li><strong>Target languages returned:</strong> ' . esc_html((string) $details['target_language_count']) . '</li>';
+        }
+        if (!empty($details['sample_translation'])) {
+            echo '<li><strong>Sample translation:</strong> ' . esc_html($details['sample_translation']) . '</li>';
+        }
+        echo '</ul>';
+    }
+
+    echo '</div>';
+}
+
 // DeepL API Settings page
 function sl_deepl_api_settings_page() {
+    $test_result = null;
+    if (isset($_POST['sl_run_deepl_api_test'])) {
+        if (!current_user_can('manage_options')) {
+            $test_result = [
+                'ok' => false,
+                'messages' => ['You are not allowed to run this test.'],
+            ];
+        } elseif (
+            empty($_POST['sl_deepl_api_test_nonce']) ||
+            !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['sl_deepl_api_test_nonce'])), 'sl_deepl_api_test')
+        ) {
+            $test_result = [
+                'ok' => false,
+                'messages' => ['Security check failed. Please refresh and try again.'],
+            ];
+        } else {
+            $test_result = sl_test_deepl_api_connection();
+        }
+    }
+
     echo '<div class="wrap">';
     echo '<h1>DeepL API Settings</h1>';
     echo '<form method="post" action="options.php">';
@@ -338,8 +396,14 @@ function sl_deepl_api_settings_page() {
     submit_button();
     echo '</form>';
     echo '<hr>';
-    echo '<h2>Test Your API</h2>';
-    echo '<p>Use the shortcode <code>[sl_test_deepl_api]</code> on any page or post to test your DeepL API connection.</p>';
+    echo '<h2>Test Your API Connection</h2>';
+    echo '<p>Run a live test to validate your API key, endpoint, language list request, and a sample translation.</p>';
+    echo '<form method="post">';
+    echo wp_nonce_field('sl_deepl_api_test', 'sl_deepl_api_test_nonce', true, false);
+    submit_button('Run API Test', 'secondary', 'sl_run_deepl_api_test', false);
+    echo '</form>';
+    sl_render_deepl_api_test_result($test_result);
+    echo '<p style="margin-top:12px;">You can also use the shortcode <code>[sl_test_deepl_api]</code> on a page for a frontend check.</p>';
     echo '</div>';
 }
 
@@ -1214,12 +1278,14 @@ function sl_display_extracted_texts() {
         if (!empty($target_lang)) {
             update_option('sl_last_active_target_lang', $target_lang);
             update_option('sl_last_target_lang', $target_lang);
-            $translated_count = sl_translate_and_display_texts($source_lang, $target_lang, $results);
+            $translation_report = [];
+            $translated_count = sl_translate_and_display_texts($source_lang, $target_lang, $results, $translation_report);
             $target_label = $available_languages[$target_lang] ?? $target_lang;
             if ($translated_count > 0) {
                 echo '<div class="updated"><p>Added ' . esc_html($translated_count) . ' new translations for ' . esc_html($target_label) . '.</p></div>';
             } else {
-                echo '<div class="notice notice-warning"><p>No new translations were added. Check your DeepL API key and source language selection.</p></div>';
+                $diagnostic = sl_build_translation_report_message($translation_report);
+                echo '<div class="notice notice-warning"><p>' . esc_html($diagnostic) . '</p></div>';
             }
         }
     }
@@ -1674,11 +1740,21 @@ function sl_clear_extracted_texts() {
 }
 
 // Function to translate extracted texts using DeepL and display in admin page
-function sl_translate_and_display_texts($source_lang, $target_lang, $results) {
+function sl_translate_and_display_texts($source_lang, $target_lang, $results, &$report = null) {
     global $wpdb;
-    $table_name = $wpdb->prefix . 'extracted_texts';
     $translation_table_name = $wpdb->prefix . 'extracted_text_translations';
     $translated_count = 0;
+    $report_data = [
+        'total_rows' => count((array) $results),
+        'already_translated' => 0,
+        'shortcode_only' => 0,
+        'attempted' => 0,
+        'deepl_failures' => 0,
+        'shortcode_preservation_failures' => 0,
+        'db_insert_failures' => 0,
+        'translated_count' => 0,
+        'error_message_counts' => [],
+    ];
 
     foreach ($results as $row) {
         // Check if this text already has a translation in the target language
@@ -1690,39 +1766,122 @@ function sl_translate_and_display_texts($source_lang, $target_lang, $results) {
 
         // If a translation already exists, skip translating it again
         if (!empty($existing_translation)) {
+            $report_data['already_translated']++;
             continue;
         }
 
         if (sl_is_text_only_shortcodes($row->original_text)) {
+            $report_data['shortcode_only']++;
             continue;
         }
 
         // Translate the text using DeepL
         $shortcode_map = [];
         $masked_text = sl_mask_shortcodes($row->original_text, $shortcode_map);
-        $translated_text = sl_deepl_translate_text($masked_text, $target_lang, $source_lang);
+        $report_data['attempted']++;
+        $translation_error = '';
+        $translated_text = sl_deepl_translate_text($masked_text, $target_lang, $source_lang, $translation_error);
 
-        if (!is_wp_error($translated_text) && !empty($translated_text)) {
-            $translated_text = sl_restore_shortcodes($translated_text, $shortcode_map);
-            if (!sl_translation_preserves_shortcodes($row->original_text, $translated_text)) {
-                continue;
+        if (is_wp_error($translated_text) || empty($translated_text)) {
+            $report_data['deepl_failures']++;
+            $error_key = is_wp_error($translated_text) ? $translated_text->get_error_message() : trim((string) $translation_error);
+            if ($error_key === '') {
+                $error_key = 'DeepL returned an empty translation.';
             }
+            if (!isset($report_data['error_message_counts'][$error_key])) {
+                $report_data['error_message_counts'][$error_key] = 0;
+            }
+            $report_data['error_message_counts'][$error_key]++;
+            continue;
+        }
 
-            // Insert the new translation into the database
-            $inserted = $wpdb->insert(
-                $translation_table_name,
-                [
-                    'extracted_text_id' => $row->id,
-                    'translated_text'   => $translated_text,
-                    'target_language'   => $target_lang,
-                ]
-            );
-            if ($inserted) {
-                $translated_count++;
+        $translated_text = sl_restore_shortcodes($translated_text, $shortcode_map);
+        if (!sl_translation_preserves_shortcodes($row->original_text, $translated_text)) {
+            $report_data['shortcode_preservation_failures']++;
+            continue;
+        }
+
+        // Insert the new translation into the database
+        $inserted = $wpdb->insert(
+            $translation_table_name,
+            [
+                'extracted_text_id' => $row->id,
+                'translated_text'   => $translated_text,
+                'target_language'   => $target_lang,
+            ]
+        );
+        if ($inserted) {
+            $translated_count++;
+            $report_data['translated_count']++;
+        } else {
+            $report_data['db_insert_failures']++;
+            $db_error = trim((string) $wpdb->last_error);
+            if ($db_error !== '') {
+                if (!isset($report_data['error_message_counts'][$db_error])) {
+                    $report_data['error_message_counts'][$db_error] = 0;
+                }
+                $report_data['error_message_counts'][$db_error]++;
             }
         }
     }
+
+    if (!empty($report_data['error_message_counts'])) {
+        arsort($report_data['error_message_counts']);
+        $report_data['top_errors'] = array_slice($report_data['error_message_counts'], 0, 3, true);
+    } else {
+        $report_data['top_errors'] = [];
+    }
+    unset($report_data['error_message_counts']);
+
+    $report = $report_data;
+
     return $translated_count;
+}
+
+function sl_build_translation_report_message($report) {
+    if (!is_array($report)) {
+        return 'No new translations were added. Check your DeepL API key and source language selection.';
+    }
+
+    $translated_count = (int) ($report['translated_count'] ?? 0);
+    if ($translated_count > 0) {
+        return 'Added ' . $translated_count . ' new translations.';
+    }
+
+    $attempted = (int) ($report['attempted'] ?? 0);
+    $already_translated = (int) ($report['already_translated'] ?? 0);
+    $shortcode_only = (int) ($report['shortcode_only'] ?? 0);
+    $deepl_failures = (int) ($report['deepl_failures'] ?? 0);
+    $db_insert_failures = (int) ($report['db_insert_failures'] ?? 0);
+
+    if ($attempted === 0 && $already_translated > 0) {
+        return 'No new translations were added because all extracted texts already have translations for this target language.';
+    }
+
+    $parts = ['No new translations were added.'];
+    $parts[] = 'Attempted: ' . $attempted . '.';
+    if ($already_translated > 0) {
+        $parts[] = 'Already translated: ' . $already_translated . '.';
+    }
+    if ($shortcode_only > 0) {
+        $parts[] = 'Shortcode-only skipped: ' . $shortcode_only . '.';
+    }
+    if ($deepl_failures > 0) {
+        $parts[] = 'DeepL failures: ' . $deepl_failures . '.';
+    }
+    if ($db_insert_failures > 0) {
+        $parts[] = 'Database insert failures: ' . $db_insert_failures . '.';
+    }
+
+    $top_errors = isset($report['top_errors']) && is_array($report['top_errors']) ? $report['top_errors'] : [];
+    if (!empty($top_errors)) {
+        $primary_error = (string) array_key_first($top_errors);
+        if ($primary_error !== '') {
+            $parts[] = 'Latest error: ' . $primary_error;
+        }
+    }
+
+    return implode(' ', $parts);
 }
 
 function sl_prepare_extracted_text_candidate($text) {
