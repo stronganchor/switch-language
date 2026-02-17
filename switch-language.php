@@ -718,7 +718,11 @@ function sl_text_ends_with_sentence_punctuation($text) {
     return preg_match('/[.!?…。！？]\s*$/u', trim($text)) === 1;
 }
 
-function sl_build_excerpt_from_translation($translated_text, $ratio) {
+function sl_text_contains_cjk($text) {
+    return preg_match('/[\x{3040}-\x{30FF}\x{3400}-\x{4DBF}\x{4E00}-\x{9FFF}\x{F900}-\x{FAFF}]/u', (string) $text) === 1;
+}
+
+function sl_build_excerpt_from_translation($translated_text, $ratio, $prefer_longer_excerpt = false) {
     $translated_text = trim($translated_text);
     if ($translated_text === '') {
         return '';
@@ -735,7 +739,14 @@ function sl_build_excerpt_from_translation($translated_text, $ratio) {
 
     $target_ratio = max(0.35, min(0.97, (float) $ratio));
     $target_length = (int) floor($translated_length * $target_ratio);
-    $target_length = max(12, min($translated_length - 1, $target_length));
+    $minimum_excerpt_length = 12;
+    if ($prefer_longer_excerpt) {
+        $minimum_excerpt_length = sl_text_contains_cjk($translated_text) ? 24 : 18;
+    }
+    if ($translated_length <= $minimum_excerpt_length) {
+        return $translated_text;
+    }
+    $target_length = max($minimum_excerpt_length, min($translated_length - 1, $target_length));
     if ($target_length >= $translated_length) {
         return $translated_text;
     }
@@ -826,7 +837,8 @@ function sl_find_excerpt_replacement($text, array $replacements) {
     }
 
     $normalized_length = sl_text_length($normalized);
-    if ($normalized_length < 20) {
+    $minimum_source_length = $ellipsis !== '' ? 8 : 20;
+    if ($normalized_length < $minimum_source_length) {
         return '';
     }
 
@@ -870,7 +882,7 @@ function sl_find_excerpt_replacement($text, array $replacements) {
         return '';
     }
 
-    $excerpt_text = sl_build_excerpt_from_translation($replacement_text, $best_ratio);
+    $excerpt_text = sl_build_excerpt_from_translation($replacement_text, $best_ratio, $ellipsis !== '');
     if ($excerpt_text !== '') {
         $replacement_text = $excerpt_text;
     }
