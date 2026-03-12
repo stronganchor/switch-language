@@ -1199,6 +1199,10 @@ function sl_display_extracted_texts() {
     $table_name = $wpdb->prefix . 'extracted_texts';
     $translation_table_name = $wpdb->prefix . 'extracted_text_translations';
 
+    if (!current_user_can('manage_options')) {
+        wp_die(esc_html__('You do not have sufficient permissions to access this page.'));
+    }
+
     $results = $wpdb->get_results("SELECT * FROM $table_name");
     $available_languages = sl_get_available_language_options();
     $available_language_codes = array_keys($available_languages);
@@ -1221,29 +1225,41 @@ function sl_display_extracted_texts() {
     }
     $active_target_lang = get_option('sl_last_active_target_lang', '');
 
+    $page_action_nonce = '';
+    if (isset($_POST['sl_extracted_text_actions_nonce'])) {
+        $page_action_nonce = sanitize_text_field(wp_unslash($_POST['sl_extracted_text_actions_nonce']));
+    }
+
+    $requires_page_action_nonce = isset($_POST['extract_texts']) || isset($_POST['clear_database']) || isset($_POST['save_target_languages']) || isset($_POST['translate_texts']);
+    $page_action_nonce_valid = $page_action_nonce !== '' && wp_verify_nonce($page_action_nonce, 'sl_extracted_text_actions');
+
     // Handle button actions (extract texts, clear database, translate texts)
-    if (isset($_POST['extract_texts'])) {
-        sl_extract_text_from_all_pages();
-    }
-
-    if (isset($_POST['clear_database'])) {
-        sl_clear_extracted_texts();
-    }
-
-    if (isset($_POST['save_target_languages'])) {
-        $source_lang = sl_normalize_source_language(sanitize_text_field($_POST['source_lang']), $available_source_languages);
-        if (empty($source_lang) && !empty($available_source_codes)) {
-            $source_lang = $available_source_codes[0];
+    if ($requires_page_action_nonce && !$page_action_nonce_valid) {
+        echo '<div class="notice notice-error"><p>Unable to process that request due to a security check. Please try again.</p></div>';
+    } else {
+        if (isset($_POST['extract_texts'])) {
+            sl_extract_text_from_all_pages();
         }
-        $target_langs = isset($_POST['target_langs']) ? array_map('sanitize_text_field', (array) $_POST['target_langs']) : [];
-        $target_langs = sl_normalize_target_languages($target_langs, $available_languages);
-        update_option('sl_last_source_lang', $source_lang);
-        update_option('sl_last_target_langs', $target_langs);
-        $last_source_lang = $source_lang;
-        $selected_target_langs = $target_langs;
-        if (count($selected_target_langs) === 1) {
-            update_option('sl_last_active_target_lang', $selected_target_langs[0]);
-            update_option('sl_last_target_lang', $selected_target_langs[0]);
+
+        if (isset($_POST['clear_database'])) {
+            sl_clear_extracted_texts();
+        }
+
+        if (isset($_POST['save_target_languages'])) {
+            $source_lang = sl_normalize_source_language(sanitize_text_field($_POST['source_lang']), $available_source_languages);
+            if (empty($source_lang) && !empty($available_source_codes)) {
+                $source_lang = $available_source_codes[0];
+            }
+            $target_langs = isset($_POST['target_langs']) ? array_map('sanitize_text_field', (array) $_POST['target_langs']) : [];
+            $target_langs = sl_normalize_target_languages($target_langs, $available_languages);
+            update_option('sl_last_source_lang', $source_lang);
+            update_option('sl_last_target_langs', $target_langs);
+            $last_source_lang = $source_lang;
+            $selected_target_langs = $target_langs;
+            if (count($selected_target_langs) === 1) {
+                update_option('sl_last_active_target_lang', $selected_target_langs[0]);
+                update_option('sl_last_target_lang', $selected_target_langs[0]);
+            }
         }
     }
 
@@ -1274,7 +1290,7 @@ function sl_display_extracted_texts() {
         }
     }
 
-    if (isset($_POST['translate_texts'])) {
+    if (isset($_POST['translate_texts']) && $page_action_nonce_valid) {
         $source_lang = sl_normalize_source_language(sanitize_text_field($_POST['source_lang']), $available_source_languages);
         if (empty($source_lang) && !empty($available_source_codes)) {
             $source_lang = $available_source_codes[0];
@@ -1332,6 +1348,7 @@ function sl_display_extracted_texts() {
 
     // Add buttons to manually extract text and clear database
     echo '<form method="post" class="sl-extract-actions">';
+    echo wp_nonce_field('sl_extracted_text_actions', 'sl_extracted_text_actions_nonce', true, false);
     submit_button('Extract Texts from All Pages', 'primary', 'extract_texts', false);
     submit_button('Clear Database', 'secondary', 'clear_database', false);
     echo '</form>';
@@ -1340,6 +1357,7 @@ function sl_display_extracted_texts() {
     echo '<h2>Translate Extracted Texts</h2>';
     echo '<p>Select one or more target languages to manage translations.</p>';
     echo '<form method="post" class="sl-language-selection">';
+    echo wp_nonce_field('sl_extracted_text_actions', 'sl_extracted_text_actions_nonce', true, false);
     echo '<label for="sl-source-lang">Source Language: </label>';
     echo '<select name="source_lang" id="sl-source-lang">';
     foreach ($available_source_languages as $code => $name) {
@@ -1397,6 +1415,7 @@ function sl_display_extracted_texts() {
             }
             echo '</div>';
             echo '<form method="post" class="sl-translate-form">';
+            echo wp_nonce_field('sl_extracted_text_actions', 'sl_extracted_text_actions_nonce', true, false);
             echo '<input type="hidden" name="source_lang" class="sl-source-lang-input" value="' . esc_attr($last_source_lang) . '">';
             echo '<input type="hidden" name="target_lang" value="' . esc_attr($code) . '">';
             echo '<button type="submit" class="button button-primary" name="translate_texts" value="1">Translate Texts</button>';

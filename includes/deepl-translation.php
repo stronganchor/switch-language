@@ -211,6 +211,10 @@ function sl_test_deepl_api_connection() {
 
 // Test the DeepL API with a shortcode [sl_test_deepl_api]
 function sl_test_deepl_api_shortcode() {
+    if (!current_user_can('manage_options')) {
+        return '';
+    }
+
     $output = '';
 
     // Test the get_deepl_language_names function
