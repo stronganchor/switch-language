@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Switch Language
  * Description: Automatically switches the WordPress site language based on the user's browser language setting
- * Version: 1.3.8
+ * Version: 1.3.9
  * Update URI: https://github.com/stronganchor/switch-language
  * Author: Strong Anchor Tech
  * Author URI: https://stronganchortech.com
@@ -225,7 +225,7 @@ function sl_language_switcher_shortcode($atts) {
     $action_url = esc_url($action_url_raw);
     $button_style = 'background:none;border:0;padding:0;margin:0;font:inherit;color:inherit;cursor:pointer;';
 
-    $output = '<form method="post" class="sl-language-switcher" action="' . $action_url . '" style="display:inline;">';
+    $output = '<!--sl-no-translate-start--><form method="post" class="sl-language-switcher" action="' . $action_url . '" style="display:inline;">';
     $output .= '<input type="hidden" name="sl_language_switcher" value="1">';
     $output .= '<input type="hidden" name="sl_redirect" value="' . esc_attr($action_url_raw) . '">';
     $output .= wp_nonce_field('sl_language_switcher', 'sl_language_switcher_nonce', true, false);
@@ -245,7 +245,7 @@ function sl_language_switcher_shortcode($atts) {
         }
     }
 
-    $output .= '</form>';
+    $output .= '</form><!--sl-no-translate-end-->';
 
     return $output;
 }
@@ -464,6 +464,31 @@ function sl_start_language_switch_buffer() {
     ob_start('sl_process_translations_in_buffer');
 }
 add_action('template_redirect', 'sl_start_language_switch_buffer');
+
+function sl_mask_translation_exclusions($content, &$exclusion_map) {
+    $exclusion_map = [];
+
+    if (!is_string($content) || strpos($content, '<!--sl-no-translate-start-->') === false) {
+        return $content;
+    }
+
+    $index = 0;
+    return preg_replace_callback('/<!--sl-no-translate-start-->(.*?)<!--sl-no-translate-end-->/s', function($matches) use (&$exclusion_map, &$index) {
+        $placeholder = '__SL_NO_TRANSLATE_' . $index . '__';
+        $exclusion_map[$placeholder] = $matches[1];
+        $index++;
+
+        return $placeholder;
+    }, $content);
+}
+
+function sl_restore_translation_exclusions($content, $exclusion_map) {
+    if (empty($exclusion_map) || !is_string($content)) {
+        return $content;
+    }
+
+    return strtr($content, $exclusion_map);
+}
 
 // Shortcode helpers to avoid translating or breaking them.
 function sl_get_shortcode_regex_pattern() {
@@ -1176,6 +1201,8 @@ function sl_process_translations_in_buffer($content) {
     $shortcode_map = [];
     $shortcode_reverse_map = [];
     $content = sl_mask_shortcodes($content, $shortcode_map, $shortcode_reverse_map);
+    $translation_exclusion_map = [];
+    $content = sl_mask_translation_exclusions($content, $translation_exclusion_map);
     list($content_tokens, $replaceable_tokens) = sl_split_html_for_translation($content);
 
     $replacements = [];
@@ -1242,6 +1269,7 @@ function sl_process_translations_in_buffer($content) {
 
     // Return the modified content with translations
     $content = implode('', $content_tokens);
+    $content = sl_restore_translation_exclusions($content, $translation_exclusion_map);
     return sl_restore_shortcodes($content, $shortcode_map);
 }
 
