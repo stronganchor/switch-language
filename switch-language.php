@@ -2,7 +2,8 @@
 /**
  * Plugin Name: Switch Language
  * Description: Automatically switches the WordPress site language based on the user's browser language setting
- * Version: 1.3.6
+ * Version: 1.3.7
+ * Update URI: https://github.com/stronganchor/switch-language
  * Author: Strong Anchor Tech
  * Author URI: https://stronganchortech.com
  * License: GPL2 or later
@@ -12,6 +13,57 @@
 if (!defined('ABSPATH')) {
     exit;
 }
+
+function sl_get_update_branch() {
+    $branch = 'main';
+
+    if ( defined( 'SWITCH_LANGUAGE_UPDATE_BRANCH' ) && is_string( SWITCH_LANGUAGE_UPDATE_BRANCH ) ) {
+        $override = trim( SWITCH_LANGUAGE_UPDATE_BRANCH );
+        if ( '' !== $override ) {
+            $branch = $override;
+        }
+    }
+
+    return (string) apply_filters( 'switch_language_update_branch', $branch );
+}
+
+function sl_bootstrap_update_checker() {
+    $checker_file = plugin_dir_path( __FILE__ ) . 'plugin-update-checker/plugin-update-checker.php';
+    if ( ! file_exists( $checker_file ) ) {
+        return;
+    }
+
+    require_once $checker_file;
+
+    if ( ! class_exists( '\YahnisElsts\PluginUpdateChecker\v5\PucFactory' ) ) {
+        return;
+    }
+
+    $repo_url = (string) apply_filters( 'switch_language_update_repository', 'https://github.com/stronganchor/switch-language' );
+    $slug     = dirname( plugin_basename( __FILE__ ) );
+
+    $update_checker = \YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
+        $repo_url,
+        __FILE__,
+        $slug
+    );
+
+    $update_checker->setBranch( sl_get_update_branch() );
+
+    foreach ( array( 'SWITCH_LANGUAGE_GITHUB_TOKEN', 'STRONGANCHOR_GITHUB_TOKEN', 'ANCHOR_GITHUB_TOKEN' ) as $constant_name ) {
+        if ( ! defined( $constant_name ) || ! is_string( constant( $constant_name ) ) ) {
+            continue;
+        }
+
+        $token = trim( (string) constant( $constant_name ) );
+        if ( '' !== $token ) {
+            $update_checker->setAuthentication( $token );
+            break;
+        }
+    }
+}
+
+sl_bootstrap_update_checker();
 
 // Include DeepL translation file
 require_once plugin_dir_path(__FILE__) . 'includes/deepl-translation.php';
