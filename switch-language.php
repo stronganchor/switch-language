@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Switch Language
  * Description: Automatically switches the WordPress site language based on the user's browser language setting
- * Version: 1.3.9
+ * Version: 1.3.10
  * Update URI: https://github.com/stronganchor/switch-language
  * Author: Strong Anchor Tech
  * Author URI: https://stronganchortech.com
@@ -28,42 +28,51 @@ function sl_get_update_branch() {
 }
 
 function sl_bootstrap_update_checker() {
+    if ( ! is_admin() ) {
+        return;
+    }
+
     $checker_file = plugin_dir_path( __FILE__ ) . 'plugin-update-checker/plugin-update-checker.php';
     if ( ! file_exists( $checker_file ) ) {
         return;
     }
 
-    require_once $checker_file;
+    try {
+        require_once $checker_file;
 
-    if ( ! class_exists( '\YahnisElsts\PluginUpdateChecker\v5\PucFactory' ) ) {
-        return;
-    }
-
-    $repo_url = (string) apply_filters( 'switch_language_update_repository', 'https://github.com/stronganchor/switch-language' );
-    $slug     = dirname( plugin_basename( __FILE__ ) );
-
-    $update_checker = \YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
-        $repo_url,
-        __FILE__,
-        $slug
-    );
-
-    $update_checker->setBranch( sl_get_update_branch() );
-
-    foreach ( array( 'SWITCH_LANGUAGE_GITHUB_TOKEN', 'STRONGANCHOR_GITHUB_TOKEN', 'ANCHOR_GITHUB_TOKEN' ) as $constant_name ) {
-        if ( ! defined( $constant_name ) || ! is_string( constant( $constant_name ) ) ) {
-            continue;
+        if ( ! class_exists( '\YahnisElsts\PluginUpdateChecker\v5\PucFactory' ) ) {
+            return;
         }
 
-        $token = trim( (string) constant( $constant_name ) );
-        if ( '' !== $token ) {
-            $update_checker->setAuthentication( $token );
-            break;
+        $repo_url = (string) apply_filters( 'switch_language_update_repository', 'https://github.com/stronganchor/switch-language' );
+        $slug     = dirname( plugin_basename( __FILE__ ) );
+
+        $update_checker = \YahnisElsts\PluginUpdateChecker\v5\PucFactory::buildUpdateChecker(
+            $repo_url,
+            __FILE__,
+            $slug
+        );
+
+        $update_checker->setBranch( sl_get_update_branch() );
+
+        foreach ( array( 'SWITCH_LANGUAGE_GITHUB_TOKEN', 'STRONGANCHOR_GITHUB_TOKEN', 'ANCHOR_GITHUB_TOKEN' ) as $constant_name ) {
+            if ( ! defined( $constant_name ) || ! is_string( constant( $constant_name ) ) ) {
+                continue;
+            }
+
+            $token = trim( (string) constant( $constant_name ) );
+            if ( '' !== $token ) {
+                $update_checker->setAuthentication( $token );
+                break;
+            }
+        }
+    } catch ( \Throwable $exception ) {
+        if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+            error_log( 'Switch Language update checker disabled: ' . $exception->getMessage() );
         }
     }
 }
-
-sl_bootstrap_update_checker();
+add_action( 'admin_init', 'sl_bootstrap_update_checker', 1 );
 
 // Include DeepL translation file
 require_once plugin_dir_path(__FILE__) . 'includes/deepl-translation.php';
@@ -1187,16 +1196,36 @@ function sl_process_translations_in_buffer($content) {
         error_log("Detected preferred language: " . $preferred_lang);
     }
 
-    // Get all extracted texts from the database
+    // Get all extracted texts and candidate translations from the database.
     $table_name = $wpdb->prefix . 'extracted_texts';
     $translation_table_name = $wpdb->prefix . 'extracted_text_translations';
+    $preferred_lang = strtolower($preferred_lang);
+    $preferred_lang_sql = '%' . $wpdb->esc_like($preferred_lang) . '%';
 
-    $extracted_texts = $wpdb->get_results("SELECT id, original_text FROM $table_name");
-
-    // Sort the extracted texts by length, longest first
-    usort($extracted_texts, function($a, $b) {
-        return strlen($b->original_text) - strlen($a->original_text);
-    });
+    $translation_rows = $wpdb->get_results($wpdb->prepare(
+        "SELECT
+            e.id AS extracted_text_id,
+            e.original_text,
+            t.id AS translation_id,
+            t.target_language,
+            t.translated_text
+        FROM $table_name e
+        INNER JOIN $translation_table_name t
+            ON t.extracted_text_id = e.id
+        WHERE LOWER(SUBSTRING(t.target_language, 1, 2)) = %s
+        ORDER BY
+            CHAR_LENGTH(e.original_text) DESC,
+            CASE
+                WHEN LOWER(t.target_language) = %s THEN 0
+                WHEN LOWER(t.target_language) LIKE %s THEN 1
+                ELSE 2
+            END,
+            t.id DESC,
+            e.id DESC",
+        $preferred_lang,
+        $preferred_lang,
+        $preferred_lang_sql
+    ));
 
     $shortcode_map = [];
     $shortcode_reverse_map = [];
@@ -1209,58 +1238,52 @@ function sl_process_translations_in_buffer($content) {
     $replacement_index = 0;
 
     // Collect candidate replacements with their translations.
-    foreach ($extracted_texts as $text) {
-        if (sl_is_text_only_shortcodes($text->original_text)) {
+    foreach ($translation_rows as $row) {
+        if (sl_is_text_only_shortcodes($row->original_text)) {
             continue;
         }
 
-        // Query for translations where the first two characters of the target language match the browser language
-        $translated_text = $wpdb->get_var($wpdb->prepare(
-            "SELECT translated_text FROM $translation_table_name WHERE extracted_text_id = %d AND LOWER(SUBSTRING(target_language, 1, 2)) = %s",
-            $text->id, strtolower($preferred_lang)
-        ));
-
         // Log whether a translation was found and the matched language
         if (defined('WP_DEBUG') && WP_DEBUG) {
-            if (!empty($translated_text)) {
-                error_log("Translation found for text ID " . $text->id . " for preferred language " . $preferred_lang);
+            if (!empty($row->translated_text)) {
+                error_log("Translation found for text ID " . $row->extracted_text_id . " for preferred language " . $preferred_lang . " using " . $row->target_language);
             } else {
-                error_log("No translation found for text ID " . $text->id . " for preferred language " . $preferred_lang);
+                error_log("No translation found for text ID " . $row->extracted_text_id . " for preferred language " . $preferred_lang);
             }
         }
 
         // If a translation is found, replace the original text in the page content
-        if (!empty($translated_text)) {
-            if (!sl_translation_preserves_shortcodes($text->original_text, $translated_text)) {
-                continue;
-            }
-
-            $search_text = $text->original_text;
-            $replacement_text = $translated_text;
-            if (!empty($shortcode_reverse_map)) {
-                $search_text = strtr($search_text, $shortcode_reverse_map);
-                $replacement_text = strtr($replacement_text, $shortcode_reverse_map);
-            }
-
-            if ($search_text === '' || $search_text === $replacement_text) {
-                continue;
-            }
-
-            if (!isset($replacements[$search_text])) {
-                $unused_ellipsis = '';
-                $normalized_excerpt = sl_normalize_excerpt_text($search_text, $unused_ellipsis);
-                $normalized_length = $normalized_excerpt !== '' ? sl_text_length($normalized_excerpt) : 0;
-                $replacements[$search_text] = [
-                    'search' => $search_text,
-                    'replace' => $replacement_text,
-                    'length' => strlen($search_text),
-                    'normalized' => $normalized_excerpt,
-                    'normalized_length' => $normalized_length,
-                    'pattern' => sl_build_flexible_match_pattern($search_text),
-                    'order' => $replacement_index++,
-                ];
-            }
+        if (empty($row->translated_text)) {
+            continue;
         }
+
+        if (!sl_translation_preserves_shortcodes($row->original_text, $row->translated_text)) {
+            continue;
+        }
+
+        $search_text = $row->original_text;
+        $replacement_text = $row->translated_text;
+        if (!empty($shortcode_reverse_map)) {
+            $search_text = strtr($search_text, $shortcode_reverse_map);
+            $replacement_text = strtr($replacement_text, $shortcode_reverse_map);
+        }
+
+        if ($search_text === '' || $search_text === $replacement_text || isset($replacements[$search_text])) {
+            continue;
+        }
+
+        $unused_ellipsis = '';
+        $normalized_excerpt = sl_normalize_excerpt_text($search_text, $unused_ellipsis);
+        $normalized_length = $normalized_excerpt !== '' ? sl_text_length($normalized_excerpt) : 0;
+        $replacements[$search_text] = [
+            'search' => $search_text,
+            'replace' => $replacement_text,
+            'length' => strlen($search_text),
+            'normalized' => $normalized_excerpt,
+            'normalized_length' => $normalized_length,
+            'pattern' => sl_build_flexible_match_pattern($search_text),
+            'order' => $replacement_index++,
+        ];
     }
 
     if (!empty($replacements)) {
